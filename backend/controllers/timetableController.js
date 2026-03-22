@@ -93,3 +93,82 @@ exports.addTimetableEntry = async (req, res) => {
 
     }
 };
+
+
+// Delete Entry
+
+exports.deleteTimetableEntry = async (req, res) => {
+    try {
+        const { id } = req.params;
+        await db.query(
+            'DELETE FROM timetable WHERE timetable_id=?',
+            [id]
+        );
+
+        res.json({ success: true });
+
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// Update Entry
+exports.updateTimetableEntry = async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+        await connection.beginTransaction();
+        const { id } = req.params;
+
+        const {
+            section_id,
+            subsection_id,
+            course_code,
+            faculty_id,
+            room_id,
+            timeslot_id,
+            component_type
+        } = req.body;
+
+        const [result] = await connection.query(
+            `UPDATE timetable
+             SET section_id=?,
+                 subsection_id=?,
+                 course_code=?,
+                 faculty_id=?,
+                 room_id=?,
+                 timeslot_id=?,
+                 component_type=?
+             WHERE timetable_id=?`,
+            [
+                section_id,
+                subsection_id || null,
+                course_code,
+                faculty_id,
+                room_id,
+                timeslot_id,
+                component_type,
+                id
+            ]
+        );
+
+        if (result.affectedRows === 0) {
+            await connection.rollback();
+            return res.status(404).json({ error: "Timetable entry not found" });
+        }
+
+        await connection.commit();
+        res.json({
+            success: true,
+            message: "Timetable entry updated"
+        });
+
+    } catch (err) {
+        await connection.rollback();
+        res.status(500).json({
+            error: "Failed to update timetable entry",
+            details: err.message
+        });
+    } finally {
+        connection.release();
+    }
+};
