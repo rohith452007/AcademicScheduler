@@ -10,14 +10,18 @@ let transporter = null;
 
 if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
     transporter = nodemailer.createTransport({
-        host: SMTP_HOST,
-        port: Number(SMTP_PORT),
-        secure: Number(SMTP_PORT) === 465,
-        auth: {
-            user: SMTP_USER,
-            pass: SMTP_PASS
-        }
-    });
+    host: SMTP_HOST,
+    port: Number(SMTP_PORT),
+    secure: false,      // 587 uses STARTTLS
+    requireTLS: true,
+    auth: {
+        user: SMTP_USER,
+        pass: SMTP_PASS
+    },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 10000
+});
     console.log('Email Service: SMTP Transporter configured.');
 } else {
     console.log('Email Service: SMTP credentials missing. Reset codes will be logged to console.');
