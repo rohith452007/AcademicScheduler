@@ -1,11 +1,14 @@
 const brevo = require('@getbrevo/brevo');
 
+const defaultClient = brevo.ApiClient.instance;
+
+const apiKey = defaultClient.authentications["api-key"];
+
+apiKey.apiKey = process.env.BREVO_API_KEY;
+
 const apiInstance = new brevo.TransactionalEmailsApi();
 
-apiInstance.setApiKey(
-    brevo.TransactionalEmailsApiApiKeys.apiKey,
-    process.env.BREVO_API_KEY
-);
+const SMTP_FROM = process.env.SMTP_FROM;
 
 // const SMTP_HOST = process.env.SMTP_HOST;
 // const SMTP_PORT = process.env.SMTP_PORT || 587;
