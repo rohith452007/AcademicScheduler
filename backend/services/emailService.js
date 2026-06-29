@@ -14,6 +14,7 @@ if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
     port: Number(SMTP_PORT),
     secure: false,      // 587 uses STARTTLS
     requireTLS: true,
+    family: 4,
     auth: {
         user: SMTP_USER,
         pass: SMTP_PASS
