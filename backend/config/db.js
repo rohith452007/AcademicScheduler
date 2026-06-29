@@ -5,9 +5,10 @@ const pool = mysql.createPool({
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASS || '',
     database: process.env.DB_NAME || 'timetable_db',
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
+    waitForConnections: true, 
+    connectionLimit: 50, 
+    queueLimit: 0,
+    multipleStatements: true
 });
 
 module.exports = pool;

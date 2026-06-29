@@ -14,7 +14,18 @@ function Login() {
             const data = await authService.login({ username, password });
             if (data.token) {
                 localStorage.setItem('token', data.token); // Store token
-                navigate('/manage');
+                localStorage.setItem('userRole', data.user.role); // Store role
+                
+                // Redirect based on role
+                if (data.user.role === 'admin') {
+                    navigate('/manage');
+                } else if (data.user.role === 'faculty') {
+                    navigate('/faculty-manage');
+                } else if (data.user.role === 'student') {
+                    navigate('/student-manage');
+                } else {
+                    navigate('/student-manage'); // Default fallback
+                }
             } else {
                 setError('Login failed: No token received');
             }
@@ -30,13 +41,14 @@ function Login() {
 
     return (
         <div className="container">
-            <h2><center>Login</center></h2>
+            <h2><center>Timetable Portal</center></h2>
             {error && <p className="error">{error}</p>}
             <form onSubmit={handleSubmit}>
                 <div>
-                    <label>Username:</label>
+                    <label>Username or Email:</label>
                     <input
                         type="text"
+                        placeholder="Enter username or email"
                         value={username}
                         onChange={(e) => setUsername(e.target.value)}
                         required
@@ -51,7 +63,12 @@ function Login() {
                         required
                     />
                 </div>
-                <button type="submit">Login</button>
+                <button type="submit" style={{ width: '100%' }}>Login</button>
+                <div style={{ marginTop: '15px', textAlign: 'center', display: 'flex', justifyContent: 'center', gap: '15px' }}>
+                    <Link to="/forgot-password" style={{ fontSize: '0.9em', color: '#0056b3' }}>Forgot Password?</Link>
+                    <span style={{ color: '#ccc' }}>|</span>
+                    <Link to="/register-institute" style={{ fontSize: '0.9em', color: '#0056b3' }}>Register Institute</Link>
+                </div>
             </form>
         </div>
     );
