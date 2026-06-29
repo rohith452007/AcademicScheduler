@@ -1066,25 +1066,26 @@ exports.setLabRoomPreference = async (req, res) => {
 
         if (course.is_open_elective === 1) {
             // OE Course: propagate to all courses with the same course_code that are also OEs
+            // OEs are global (no branch-specific preference)
             const [relatedCourses] = await db.query(
                 'SELECT course_id FROM courses WHERE course_code = ? AND is_open_elective = 1 AND institute_id = ?',
                 [course.course_code, req.user.institute_id]
             );
             for (const rc of relatedCourses) {
                 await db.query(
-                    `INSERT INTO lab_room_preference (course_id, room_id, institute_id)
-                     VALUES (?, ?, ?)
+                    `INSERT INTO lab_room_preference (course_id, branch_id, room_id, institute_id)
+                     VALUES (?, NULL, ?, ?)
                      ON DUPLICATE KEY UPDATE room_id = VALUES(room_id)`,
                     [rc.course_id, room_id, req.user.institute_id]
                 );
             }
         } else {
-            // Regular Course: set room preference ONLY for this specific course_id
+            const branchIdVal = branch_id || null;
             await db.query(
-                `INSERT INTO lab_room_preference (course_id, room_id, institute_id)
-                 VALUES (?, ?, ?)
+                `INSERT INTO lab_room_preference (course_id, branch_id, room_id, institute_id)
+                 VALUES (?, ?, ?, ?)
                  ON DUPLICATE KEY UPDATE room_id = VALUES(room_id)`,
-                [course_id, room_id, req.user.institute_id]
+                [course_id, branchIdVal, room_id, req.user.institute_id]
             );
         }
 
@@ -1097,6 +1098,7 @@ exports.setLabRoomPreference = async (req, res) => {
 exports.deleteLabRoomPreference = async (req, res) => {
     try {
         const { course_id } = req.params;
+        const { branch_id } = req.query;
 
         // Find the course details
         const [[course]] = await db.query(
@@ -1106,7 +1108,6 @@ exports.deleteLabRoomPreference = async (req, res) => {
         if (!course) return res.status(404).json({ error: 'Course not found' });
 
         if (course.is_open_elective === 1) {
-            // OE Course: delete for all matching OE courses with this course_code
             const [relatedCourses] = await db.query(
                 'SELECT course_id FROM courses WHERE course_code = ? AND is_open_elective = 1 AND institute_id = ?',
                 [course.course_code, req.user.institute_id]
@@ -1114,16 +1115,23 @@ exports.deleteLabRoomPreference = async (req, res) => {
             const ids = relatedCourses.map(rc => rc.course_id);
             if (ids.length > 0) {
                 await db.query(
-                    'DELETE FROM lab_room_preference WHERE course_id IN (?) AND institute_id = ?',
+                    'DELETE FROM lab_room_preference WHERE course_id IN (?) AND branch_id IS NULL AND institute_id = ?',
                     [ids, req.user.institute_id]
                 );
             }
         } else {
-            // Regular Course: delete ONLY for this specific course_id
-            await db.query(
-                'DELETE FROM lab_room_preference WHERE course_id = ? AND institute_id = ?',
-                [course_id, req.user.institute_id]
-            );
+            const branchIdVal = branch_id || null;
+            if (branchIdVal) {
+                await db.query(
+                    'DELETE FROM lab_room_preference WHERE course_id = ? AND branch_id = ? AND institute_id = ?',
+                    [course_id, branchIdVal, req.user.institute_id]
+                );
+            } else {
+                await db.query(
+                    'DELETE FROM lab_room_preference WHERE course_id = ? AND branch_id IS NULL AND institute_id = ?',
+                    [course_id, req.user.institute_id]
+                );
+            }
         }
 
         res.json({ success: true });

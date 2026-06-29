@@ -1725,7 +1725,7 @@ function Manage() {
                                             {filteredLabCourses.map((course, idx) => {
                                                 const representativeId = course.course_ids[0];
                                                 const prefKey = course.branch_id ? `${representativeId}_${course.branch_id}` : String(representativeId);
-                                                const prefRoomId = labRoomPrefs[prefKey] || '';
+                                                const prefRoomId = labRoomPrefs[prefKey] || labRoomPrefs[String(representativeId)] || '';
                                                 const allRooms = data.room || [];
                                                 const prefRoom = allRooms.find(r => String(r.room_id) === String(prefRoomId));
                                                 return (
