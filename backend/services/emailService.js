@@ -9,6 +9,11 @@ const SMTP_FROM = process.env.SMTP_FROM || 'no-reply@timetableportal.com';
 let transporter = null;
 
 if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
+    console.log("SMTP_HOST:", SMTP_HOST);
+    console.log("SMTP_PORT:", SMTP_PORT);
+    console.log("SMTP_USER:", SMTP_USER);
+    console.log("SMTP_FROM:", SMTP_FROM);
+
     transporter = nodemailer.createTransport({
     host: SMTP_HOST,
     port: Number(SMTP_PORT),
@@ -84,11 +89,24 @@ exports.sendResetCodeEmail = async (toEmail, username, code, instituteName = 'Ti
 
     if (transporter) {
         try {
+
+            console.log("Verifying SMTP connection...");
+
+            await transporter.verify();
+
+            console.log("SMTP verified successfully.");
+
             await transporter.sendMail(mailOptions);
-            console.log(`✅ Password reset code sent to: ${toEmail}`);
+
+            console.log(`Password reset code sent to: ${toEmail}`);
+
             return { sent: true };
+
         } catch (error) {
-            console.error('Error sending email via SMTP:', error.message);
+
+            console.error("FULL SMTP ERROR:");
+            console.error(error);
+
         }
     }
 
