@@ -466,7 +466,7 @@ function Manage() {
 
             const token = localStorage.getItem('token');
 
-            const res = await fetch('http://localhost:5001/api/admin/generate-master', {
+            const res = await fetch('https://academicscheduler.onrender.com/api/admin/generate-master', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
