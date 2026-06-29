@@ -1,37 +1,44 @@
-const nodemailer = require('nodemailer');
+const brevo = require('@getbrevo/brevo');
 
-const SMTP_HOST = process.env.SMTP_HOST;
-const SMTP_PORT = process.env.SMTP_PORT || 587;
-const SMTP_USER = process.env.SMTP_USER;
-const SMTP_PASS = process.env.SMTP_PASS;
-const SMTP_FROM = process.env.SMTP_FROM || 'no-reply@timetableportal.com';
+const apiInstance = new brevo.TransactionalEmailsApi();
 
-let transporter = null;
+apiInstance.setApiKey(
+    brevo.TransactionalEmailsApiApiKeys.apiKey,
+    process.env.BREVO_API_KEY
+);
 
-if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
-    console.log("SMTP_HOST:", SMTP_HOST);
-    console.log("SMTP_PORT:", SMTP_PORT);
-    console.log("SMTP_USER:", SMTP_USER);
-    console.log("SMTP_FROM:", SMTP_FROM);
+// const SMTP_HOST = process.env.SMTP_HOST;
+// const SMTP_PORT = process.env.SMTP_PORT || 587;
+// const SMTP_USER = process.env.SMTP_USER;
+// const SMTP_PASS = process.env.SMTP_PASS;
+// const SMTP_FROM = process.env.SMTP_FROM || 'no-reply@timetableportal.com';
 
-    transporter = nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: Number(SMTP_PORT),
-    secure: false,      // 587 uses STARTTLS
-    requireTLS: true,
-    family: 4,
-    auth: {
-        user: SMTP_USER,
-        pass: SMTP_PASS
-    },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 10000
-});
-    console.log('Email Service: SMTP Transporter configured.');
-} else {
-    console.log('Email Service: SMTP credentials missing. Reset codes will be logged to console.');
-}
+// let transporter = null;
+
+// if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
+//     console.log("SMTP_HOST:", SMTP_HOST);
+//     console.log("SMTP_PORT:", SMTP_PORT);
+//     console.log("SMTP_USER:", SMTP_USER);
+//     console.log("SMTP_FROM:", SMTP_FROM);
+
+//     transporter = nodemailer.createTransport({
+//     host: SMTP_HOST,
+//     port: Number(SMTP_PORT),
+//     secure: false,      // 587 uses STARTTLS
+//     requireTLS: true,
+//     family: 4,
+//     auth: {
+//         user: SMTP_USER,
+//         pass: SMTP_PASS
+//     },
+//     connectionTimeout: 10000,
+//     greetingTimeout: 10000,
+//     socketTimeout: 10000
+// });
+//     console.log('Email Service: SMTP Transporter configured.');
+// } else {
+//     console.log('Email Service: SMTP credentials missing. Reset codes will be logged to console.');
+// }
 
 /**
  * Sends a password reset OTP email via SMTP.
@@ -87,28 +94,60 @@ exports.sendResetCodeEmail = async (toEmail, username, code, instituteName = 'Ti
         `
     };
 
-    if (transporter) {
-        try {
+    try {
+        const sendSmtpEmail = new brevo.SendSmtpEmail();
 
-            console.log("Verifying SMTP connection...");
+        sendSmtpEmail.subject = `Password Reset Code - ${instituteName}`;
 
-            await transporter.verify();
+        sendSmtpEmail.sender = {
+            name: instituteName,
+            email: SMTP_FROM
+        };
 
-            console.log("SMTP verified successfully.");
+        sendSmtpEmail.to = [
+            {
+                email: toEmail,
+                name: username
+            }
+        ];
 
-            await transporter.sendMail(mailOptions);
+        sendSmtpEmail.htmlContent = mailOptions.html;
 
-            console.log(`Password reset code sent to: ${toEmail}`);
+        await apiInstance.sendTransacEmail(sendSmtpEmail);
 
-            return { sent: true };
+        console.log(`✅ Password reset code sent to: ${toEmail}`);
 
-        } catch (error) {
+        return { sent: true };
 
-            console.error("FULL SMTP ERROR:");
-            console.error(error);
+    } catch (error) {
 
-        }
+        console.error("BREVO API ERROR:");
+        console.error(error);
+
     }
+
+    // if (transporter) {
+    //     try {
+
+    //         console.log("Verifying SMTP connection...");
+
+    //         await transporter.verify();
+
+    //         console.log("SMTP verified successfully.");
+
+    //         await transporter.sendMail(mailOptions);
+
+    //         console.log(`Password reset code sent to: ${toEmail}`);
+
+    //         return { sent: true };
+
+    //     } catch (error) {
+
+    //         console.error("FULL SMTP ERROR:");
+    //         console.error(error);
+
+    //     }
+    // }
 
     // Console fallback when SMTP not configured
     console.log('\n========================================================================');
