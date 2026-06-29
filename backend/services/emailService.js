@@ -1,13 +1,7 @@
-const brevo = require('@getbrevo/brevo');
+const axios = require("axios");
 
-const defaultClient = brevo.ApiClient.instance;
-
-const apiKey = defaultClient.authentications["api-key"];
-
-apiKey.apiKey = process.env.BREVO_API_KEY;
-
-const apiInstance = new brevo.TransactionalEmailsApi();
-
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
+const SMTP_FROM = process.env.SMTP_FROM;
 const SMTP_FROM = process.env.SMTP_FROM;
 
 // const SMTP_HOST = process.env.SMTP_HOST;
@@ -98,25 +92,30 @@ exports.sendResetCodeEmail = async (toEmail, username, code, instituteName = 'Ti
     };
 
     try {
-        const sendSmtpEmail = new brevo.SendSmtpEmail();
-
-        sendSmtpEmail.subject = `Password Reset Code - ${instituteName}`;
-
-        sendSmtpEmail.sender = {
-            name: instituteName,
-            email: SMTP_FROM
-        };
-
-        sendSmtpEmail.to = [
+        await axios.post(
+            "https://api.brevo.com/v3/smtp/email",
             {
-                email: toEmail,
-                name: username
+                sender: {
+                    name: instituteName,
+                    email: SMTP_FROM
+                },
+                to: [
+                    {
+                        email: toEmail,
+                        name: username
+                    }
+                ],
+                subject: `Password Reset Code - ${instituteName}`,
+                htmlContent: mailOptions.html
+            },
+            {
+                headers: {
+                    "accept": "application/json",
+                    "api-key": BREVO_API_KEY,
+                    "content-type": "application/json"
+                }
             }
-        ];
-
-        sendSmtpEmail.htmlContent = mailOptions.html;
-
-        await apiInstance.sendTransacEmail(sendSmtpEmail);
+        );
 
         console.log(`✅ Password reset code sent to: ${toEmail}`);
 
