@@ -2,7 +2,6 @@ const axios = require("axios");
 
 const BREVO_API_KEY = process.env.BREVO_API_KEY;
 const SMTP_FROM = process.env.SMTP_FROM;
-const SMTP_FROM = process.env.SMTP_FROM;
 
 // const SMTP_HOST = process.env.SMTP_HOST;
 // const SMTP_PORT = process.env.SMTP_PORT || 587;
