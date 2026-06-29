@@ -391,9 +391,9 @@ exports.getMasterTimetable = async (req, res) => {
         if (program_id) { q += ' AND mt.program_id=?'; p.push(program_id); }
         if (year_id) { q += ' AND sem.year_id=?'; p.push(year_id); }
         if (semester_id) { q += ' AND mt.semester_id=?'; p.push(semester_id); }
-        q += ` GROUP BY mt.master_id
-               ORDER BY FIELD(ts.day,'MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY'),
-                        ts.slot_order`;
+        q += ` ORDER BY
+                    FIELD(ts.day,'MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY'),
+                    ts.slot_order`;
         const [rows] = await db.query(q, p);
         res.json({ master_entries: rows });
     } catch (e) {
