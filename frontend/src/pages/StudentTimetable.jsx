@@ -210,7 +210,8 @@ export default function StudentTimetable() {
                                 e.section_name === secName &&
                                 e.timeslot_id === nxt.timeslot_id &&
                                 e.course_code === entry.course_code &&
-                                e.room_id === entry.room_id
+                                e.room_id === entry.room_id &&
+                                e.subsection_id === entry.subsection_id
                             );
                             if (!nxtE) break;
                             span++;
