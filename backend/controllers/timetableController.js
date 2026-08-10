@@ -2,35 +2,39 @@ const db = require('../config/db');
 
 const tbl = (req) => (req.query && req.query.draft === 'true') ? 'master_timetable_draft' : 'master_timetable';
 
-// keeps track of which slots are already taken
+// Keeps track of which slots are already taken
 function makeSlot() {
     return {
         faculty: new Set(), room: new Set(),
         section: new Set(), sectionPartial: new Set(), subsection: new Set(),
-        sectionCourse: {}, // tracks course code and count per section
-        facultyCourse: {}, // tracks course per faculty
-        roomCourse: {}    // tracks course per room
+        sectionCourse: {}, // Tracks course code and count per section
+        facultyCourse: {}, // Tracks course per faculty
+        roomCourse: {}    // Tracks course per room
     };
 }
 
-// check if we can fit a class in this slot without conflicts
+// Checks if we can fit a class in this slot without conflicts
 function isFree(occ, tsId, facId, roomId, subId, secId, courseCode, oeNum) {
     const s = occ[tsId];
     if (!s) return true;
 
     if (facId && s.faculty.has(facId)) {
-        if (!oeNum || !s.facultyCourse || s.facultyCourse[facId] !== courseCode) {
+        const fc = s.facultyCourse[facId];
+        if (!oeNum || !fc || fc.code !== courseCode || Number(fc.oeNum) !== Number(oeNum)) {
             return false;
         }
     }
     if (roomId && s.room.has(roomId)) {
-        if (!oeNum || !s.roomCourse || s.roomCourse[roomId] !== courseCode) return false;
+        const rc = s.roomCourse[roomId];
+        if (!oeNum || !rc || rc.code !== courseCode || Number(rc.oeNum) !== Number(oeNum)) {
+            return false;
+        }
     }
     if (subId && s.subsection.has(subId)) return false;
     if (secId) {
         if (s.section.has(secId) || s.sectionPartial.has(secId)) {
-            // let different electives share the same vertical slot if they're in the same group
-            if (oeNum && s.sectionCourse[secId] && s.sectionCourse[secId].oeNum === oeNum) {
+            // Let different electives share the same vertical slot if they're in the same group
+            if (oeNum && s.sectionCourse[secId] && Number(s.sectionCourse[secId].oeNum) === Number(oeNum)) {
                 return true;
             }
             return false;
@@ -40,18 +44,18 @@ function isFree(occ, tsId, facId, roomId, subId, secId, courseCode, oeNum) {
     return true;
 }
 
-// book this slot so nothing else can overlap it
+// Books this slot so nothing else can overlap it
 function lockSlot(occ, wl, tsId, facId, roomId, subId, secId, courseCode, oeNum) {
     if (!occ[tsId]) occ[tsId] = makeSlot();
     const s = occ[tsId];
     if (facId) {
         s.faculty.add(facId);
         wl[facId] = (wl[facId] || 0) + 1;
-        if (courseCode) s.facultyCourse[facId] = courseCode;
+        if (courseCode) s.facultyCourse[facId] = { code: courseCode, oeNum };
     }
     if (roomId) {
         s.room.add(roomId);
-        if (courseCode) s.roomCourse[roomId] = courseCode;
+        if (courseCode) s.roomCourse[roomId] = { code: courseCode, oeNum };
     }
     if (subId) s.subsection.add(subId);
     if (secId) {
@@ -63,12 +67,19 @@ function lockSlot(occ, wl, tsId, facId, roomId, subId, secId, courseCode, oeNum)
     }
 }
 
-// free up the slot 
+// Free up the slot 
 function unlockSlot(occ, wl, tsId, facId, roomId, subId, secId, courseCode) {
     const s = occ[tsId];
     if (!s) return;
-    if (facId) { s.faculty.delete(facId); if (wl[facId] > 0) wl[facId]--; }
-    if (roomId) s.room.delete(roomId);
+    if (facId) {
+        s.faculty.delete(facId);
+        if (wl[facId] > 0) wl[facId]--;
+        delete s.facultyCourse[facId];
+    }
+    if (roomId) {
+        s.room.delete(roomId);
+        delete s.roomCourse[roomId];
+    }
     if (subId) s.subsection.delete(subId);
     if (secId) {
         (subId ? s.sectionPartial : s.section).delete(secId);
@@ -79,7 +90,7 @@ function unlockSlot(occ, wl, tsId, facId, roomId, subId, secId, courseCode) {
     }
 }
 
-// mix up the array so we don't always pick the same order
+// Shuffle the array so we don't always pick the same order
 function shuffle(arr) {
     const a = [...arr];
     for (let i = a.length - 1; i > 0; i--) {
@@ -89,12 +100,12 @@ function shuffle(arr) {
     return a;
 }
 
-// skip the lunch break slot
+// Skip the lunch break slot
 function isSchedulable(ts) {
     return !ts.is_break;
 }
 
-// make sure lab slots are actually back-to-back
+// Make sure lab slots are actually back-to-back
 function isValidBlock(block) {
     if (!block.length) return false;
 
@@ -107,7 +118,7 @@ function isValidBlock(block) {
     return true;
 }
 
-// find valid windows for lab sessions (consecutive slots)
+// Find valid windows for lab sessions (consecutive slots)
 function getValidBlocks(daySlots, blockLen) {
     const len = Math.min(blockLen, 3);
     const blocks = [];
@@ -142,7 +153,7 @@ function getValidBlocks(daySlots, blockLen) {
     return blocks;
 }
 
-// check everything: faculty, rooms, and if the section is already busy
+// Check everything: faculty, rooms, and if the section is already busy
 async function validate(conn, {
     master_id, section_id, subsection_id,
     course_code, faculty_id, room_id, timeslot_id, component_type
@@ -213,7 +224,27 @@ async function validate(conn, {
     return { ok: true, day: tsRow.day };
 }
 
-// helper to look up branch and program details for a section
+function isCourseOEForSection(course, sectionId, courseSections) {
+    if (!course) return false;
+    const cs = courseSections.find(r => r.course_code === course.course_code && Number(r.section_id) === Number(sectionId));
+    if (cs && cs.section_is_open_elective !== null) {
+        return cs.section_is_open_elective === 1;
+    }
+    if (course.is_open_elective === 1) return true;
+    return courseSections.some(r => r.course_code === course.course_code && (r.section_is_open_elective === 1 || r.is_open_elective === 1));
+}
+
+function getOENumberForSection(course, sectionId, courseSections) {
+    if (!course) return null;
+    const cs = courseSections.find(r => r.course_code === course.course_code && Number(r.section_id) === Number(sectionId));
+    if (cs && cs.section_is_open_elective !== null) {
+        return cs.section_is_open_elective === 1 ? (cs.section_open_elective_number ?? course.open_elective_number) : null;
+    }
+    const anyCs = courseSections.find(r => r.course_code === course.course_code && (r.section_open_elective_number || r.open_elective_number));
+    return course.open_elective_number ?? anyCs?.section_open_elective_number ?? anyCs?.open_elective_number ?? null;
+}
+
+// Helper to look up branch and program details for a section
 async function getDenorm(conn, section_id, timeslot_id, institute_id) {
     const [[si]] = await conn.query(
         `SELECT s.branch_id, s.semester_id, sem.program_id
@@ -339,7 +370,9 @@ exports.getTimetableBySection = async (req, res) => {
     try {
         const [rows] = await db.query(
             `SELECT mt.*,
-                    c.course_name, c.is_open_elective, c.open_elective_number,
+                    c.course_name, 
+                    IFNULL(cs.section_is_open_elective, c.is_open_elective) AS is_open_elective,
+                    IFNULL(cs.section_open_elective_number, c.open_elective_number) AS open_elective_number,
                     f.faculty_name, f.faculty_short,
                     r.room_name,
                     sub.subsection_name,
@@ -347,6 +380,7 @@ exports.getTimetableBySection = async (req, res) => {
                     cc.lab_group_type
              FROM master_timetable mt
              JOIN courses    c   ON mt.course_code   = c.course_code AND c.institute_id = mt.institute_id
+             LEFT JOIN course_section cs ON cs.course_code = c.course_code AND cs.section_id = mt.section_id AND cs.institute_id = mt.institute_id
              JOIN faculty    f   ON mt.faculty_id    = f.faculty_id AND f.institute_id = mt.institute_id
              JOIN rooms      r   ON mt.room_id       = r.room_id AND r.institute_id = mt.institute_id
              JOIN time_slots ts  ON mt.timeslot_id   = ts.timeslot_id AND ts.institute_id = mt.institute_id
@@ -354,7 +388,7 @@ exports.getTimetableBySection = async (req, res) => {
              LEFT JOIN course_components cc
                     ON cc.course_code=mt.course_code AND cc.component_type=mt.component_type AND cc.institute_id = mt.institute_id
              WHERE mt.section_id=? AND mt.institute_id=?
-             ORDER BY FIELD(ts.day,'MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY'),
+             ORDER BY FIELD(ts.day,'MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY','SUNDAY'),
                       ts.slot_order`,
             [req.params.section_id, req.user.institute_id]);
         res.json(rows);
@@ -366,7 +400,9 @@ exports.getMasterTimetable = async (req, res) => {
         const { program_id, year_id, semester_id } = req.query;
         let q = `
             SELECT mt.*,
-                   c.course_name, c.is_open_elective, c.open_elective_number,
+                   c.course_name, 
+                   IFNULL(cs.section_is_open_elective, c.is_open_elective) AS is_open_elective,
+                   IFNULL(cs.section_open_elective_number, c.open_elective_number) AS open_elective_number,
                    f.faculty_short,
                    r.room_name,
                    sub.subsection_name,
@@ -377,6 +413,7 @@ exports.getMasterTimetable = async (req, res) => {
                    cc.lab_group_type
             FROM ${tbl(req)} mt
             JOIN courses    c   ON (mt.course_id = c.course_id OR (mt.course_id IS NULL AND mt.course_code = c.course_code AND mt.program_id = c.program_id)) AND c.institute_id = mt.institute_id
+            LEFT JOIN course_section cs ON cs.course_code = c.course_code AND cs.section_id = mt.section_id AND cs.institute_id = mt.institute_id
             JOIN faculty    f   ON mt.faculty_id   = f.faculty_id AND f.institute_id = mt.institute_id
             JOIN rooms      r   ON mt.room_id      = r.room_id AND r.institute_id = mt.institute_id
             JOIN time_slots ts  ON mt.timeslot_id  = ts.timeslot_id AND ts.institute_id = mt.institute_id
@@ -391,9 +428,9 @@ exports.getMasterTimetable = async (req, res) => {
         if (program_id) { q += ' AND mt.program_id=?'; p.push(program_id); }
         if (year_id) { q += ' AND sem.year_id=?'; p.push(year_id); }
         if (semester_id) { q += ' AND mt.semester_id=?'; p.push(semester_id); }
-        q += ` ORDER BY
-                    FIELD(ts.day,'MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY'),
-                    ts.slot_order`;
+        q += ` GROUP BY mt.master_id
+               ORDER BY FIELD(ts.day,'MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY','SUNDAY'),
+                        ts.slot_order`;
         const [rows] = await db.query(q, p);
         res.json({ master_entries: rows });
     } catch (e) {
@@ -420,7 +457,7 @@ exports.generateMasterTimetable = async (req, res) => {
             FROM section s JOIN semester sem ON s.semester_id=sem.semester_id
             WHERE s.institute_id = ? AND sem.institute_id = ?`, [req.user.institute_id, req.user.institute_id]);
         const [allCourses] = await conn.query('SELECT * FROM courses WHERE institute_id = ?', [req.user.institute_id]);
-        const [courseBranches] = await conn.query('SELECT * FROM course_branch WHERE institute_id = ?', [req.user.institute_id]);
+        const [courseSections] = await conn.query('SELECT * FROM course_section WHERE institute_id = ?', [req.user.institute_id]);
         const [courseComponents] = await conn.query('SELECT * FROM course_components WHERE institute_id = ?', [req.user.institute_id]);
         const [facultyAllocations] = await conn.query(`
             SELECT fa.faculty_id, fa.course_id, fa.branch_id, fa.section_id,
@@ -431,7 +468,7 @@ exports.generateMasterTimetable = async (req, res) => {
         const [timeSlots] = await conn.query(`
             SELECT * FROM time_slots
             WHERE institute_id = ?
-            ORDER BY FIELD(day,'MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY'),
+            ORDER BY FIELD(day,'MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY','SUNDAY'),
                      slot_order`, [req.user.institute_id]);
         const [allRooms] = await conn.query('SELECT * FROM rooms WHERE institute_id = ?', [req.user.institute_id]);
         const [allSubsections] = await conn.query('SELECT * FROM subsection WHERE institute_id = ?', [req.user.institute_id]);
@@ -458,7 +495,7 @@ exports.generateMasterTimetable = async (req, res) => {
             return n.includes('BDES') || n.includes('B.DES');
         })?.program_id;
 
-        // link each course to the program it belongs to
+        // Link each course to the program it belongs to
         const courseCodeProgs = {};
         allCourses.forEach(c => {
             const sem = semesters.find(s => Number(s.semester_id) === Number(c.semester_id));
@@ -468,7 +505,6 @@ exports.generateMasterTimetable = async (req, res) => {
             }
         });
 
-        // work out if courses are shared between B.Tech and B.Des to avoid double booking faculty
         const courseCodeUsage = {};
         for (const [code, progSet] of Object.entries(courseCodeProgs)) {
             const hasBTech = btechId && progSet.has(btechId);
@@ -476,19 +512,19 @@ exports.generateMasterTimetable = async (req, res) => {
             courseCodeUsage[code] = (hasBTech && hasBDes) ? progSet.size : 1;
         }
 
-        const DAYS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY'];
+        const DAYS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 
         const slotsByDay = {};
         for (const d of DAYS) slotsByDay[d] = timeSlots.filter(ts => ts.day === d);
 
-        // skip breaks
+        // Skip breaks
         const schedulableByDay = {};
         for (const d of DAYS) schedulableByDay[d] = slotsByDay[d].filter(isSchedulable);
 
-        const occ = {};  // occupation map
+        const occ = {};  // Occupation map
         const wl = {};
 
-        // final list of rows to push to the database
+        // Final list of rows to push to the database
         const inserts = [];
 
         function commitEntry(day, tsId, progId, branchId, semId,
@@ -497,9 +533,10 @@ exports.generateMasterTimetable = async (req, res) => {
                 secId, subId || null, courseId, courseCode, facId, roomId, compType, req.user.institute_id]);
 
             const courseObj = allCourses.find(c => c.course_id === courseId);
-            const oeNum = courseObj?.is_open_elective === 1 ? courseObj.open_elective_number : null;
+            const rawOeNum = courseObj?.is_open_elective === 1 ? courseObj.open_elective_number : null;
+            const oeKey = rawOeNum ? (compType === 'LAB' ? rawOeNum + '_LAB' : rawOeNum + '_THEORY') : null;
 
-            lockSlot(occ, wl, tsId, facId, roomId, subId || null, secId, courseCode, oeNum);
+            lockSlot(occ, wl, tsId, facId, roomId, subId || null, secId, courseCode, oeKey);
         }
 
         function getFacultyForSection(courseId, sectionId) {
@@ -554,7 +591,7 @@ exports.generateMasterTimetable = async (req, res) => {
                 return null; // Preferred room not available or capacity too small → do not fall back to other rooms
             }
 
-            // Default: pick any free lab room (smallest capacity that fits)
+            // Default: pick any free lab room (smallest capacity that fits)(Best Fit)
             return allRooms
                 .filter(r =>
                     r.room_type === 'LAB' &&
@@ -567,331 +604,320 @@ exports.generateMasterTimetable = async (req, res) => {
                 .sort((a, b) => a.capacity - b.capacity)[0] || null;
         }
 
-        // Open Elective Scheduling
+        // Open Elective Scheduling (Global approach) 
+        // Group ALL OE courses by open_elective_number across ALL programs/semesters.
 
-        const semesterNumbers = [...new Set(semesters.map(s => s.semester_number))];
+        // Build global OE map: oeNumber → all course entries across programs (respecting branch level overrides)
+        const globalOEMap = {};
+        for (const c of allCourses) {
+            const css = courseSections.filter(cs => cs.course_code === c.course_code);
+            const oeNumsForCourse = new Set();
+            for (const cs of css) {
+                const isOE = cs.section_is_open_elective !== null ? (cs.section_is_open_elective === 1) : (c.is_open_elective === 1);
+                if (isOE) {
+                    const num = cs.section_is_open_elective !== null && cs.section_is_open_elective === 1
+                        ? (cs.section_open_elective_number ?? c.open_elective_number)
+                        : c.open_elective_number;
+                    if (num) oeNumsForCourse.add(num);
+                }
+            }
+            if (css.length === 0 && c.is_open_elective && c.open_elective_number) {
+                oeNumsForCourse.add(c.open_elective_number);
+            }
+            for (const num of oeNumsForCourse) {
+                (globalOEMap[num] ??= []).push(c);
+            }
+        }
 
-        // group electives by semester
-        const semesterOEData = semesterNumbers.map(semNum => {
-            const semSecs = allSections.filter(s => Number(s.semester_number) === Number(semNum));
-            const semCourses = allCourses.filter(c => {
-                if (!c.is_open_elective) return false;
-                const cSem = semesters.find(s => Number(s.semester_id) === Number(c.semester_id));
-                return cSem && Number(cSem.semester_number) === Number(semNum);
-            });
-            return { semNum, semSecs, semCourses, totalOE: semCourses.length };
-        });
+        const globalOEGroups = [];
+        for (const [oeNumber, courses] of Object.entries(globalOEMap)) {
+            const variantsByCode = new Map(); // course_code → [course entries from each program]
+            for (const c of courses) {
+                if (!variantsByCode.has(c.course_code)) variantsByCode.set(c.course_code, []);
+                variantsByCode.get(c.course_code).push(c);
+            }
 
-        // sort by most electives first
-        semesterOEData.sort((a, b) => b.totalOE - a.totalOE);
-
-        for (const { semNum, semSecs, semCourses } of semesterOEData) {
-            if (!semSecs.length || !semCourses.length) continue;
-
-            const oeMap = {};
-            // group electives that share the same number
-            for (const c of semCourses) {
-                if (c.open_elective_number) {
-                    (oeMap[c.open_elective_number] ??= []).push(c);
+            const group = [];
+            for (const [courseCode, variants] of variantsByCode) {
+                const rep = variants.find(v => getFacultyForCourse(v.course_id).length > 0) || variants[0];
+                if (getFacultyForCourse(rep.course_id).length > 0) {
+                    group.push({ courseCode, representative: rep, allVariants: variants });
                 }
             }
 
-            const oeGroups = [];
-            for (const [oeNumber, courses] of Object.entries(oeMap)) {
-                // skip duplicate entries
-                const uniqueGroupMap = new Map();
-                for (const c of courses) uniqueGroupMap.set(c.course_code, c);
-                const group = Array.from(uniqueGroupMap.values());
-
-                // Ignore courses with no faculty
-                const groupWithFac = group.filter(c => getFacultyForCourse(c.course_id).length > 0);
-                if (groupWithFac.length > 0) {
-                    oeGroups.push({ oeNum: oeNumber, group: groupWithFac });
-                }
+            if (group.length > 0) {
+                globalOEGroups.push({ oeNum: oeNumber, group });
             }
-            oeGroups.sort((a, b) => b.group.length - a.group.length);
-            console.error(`[DEBUG OE] semester=${semNum} totalGroups=${oeGroups.length}`);
+        }
+        globalOEGroups.sort((a, b) => b.group.length - a.group.length);
+        console.error(`[DEBUG OE] globalOEGroups total=${globalOEGroups.length}`);
 
-            for (const { oeNum, group } of oeGroups) {
-                console.error(`[DEBUG OE] Processing group oeNum=${oeNum} courses=${group.length}`);
-                // each elective number only gets one vertical slot per day max
-                const oeUsedDays = new Set();
+        // Theory OE Scheduling
+        for (const { oeNum, group } of globalOEGroups) {
+            console.error(`[DEBUG OE] Processing oeNum=${oeNum} courseCount=${group.length}`);
+            const oeUsedDays = new Set();
 
-                // Find max hours in group
-                let theoryHours = 0;
-                for (const course of group) {
-                    const cCode = String(course.course_code).trim();
-                    const allTheoryComps = courseComponents.filter(
-                        cc => Number(cc.course_id) === Number(course.course_id) && cc.component_type === 'THEORY'
+            // Max theory hours across all representatives in this group
+            let theoryHours = 0;
+            for (const { courseCode, representative } of group) {
+                const comps = courseComponents.filter(
+                    cc => Number(cc.course_id) === Number(representative.course_id) && cc.component_type === 'THEORY'
+                );
+                console.log(`[DEBUG OE] course=${courseCode} theoryComps=${comps.length}`);
+                if (comps.length > theoryHours) theoryHours = comps.length;
+            }
+            if (theoryHours === 0) continue;
+            console.log(`[OE GROUP] oeNum=${oeNum} finalTheory=${theoryHours}`);
+
+            const oeEligibleSecs = allSections.filter(sec =>
+                group.some(({ allVariants }) => {
+                    const v = allVariants.find(variant => Number(variant.program_id) === Number(sec.program_id));
+                    if (!v) return false;
+                    return courseSections.some(cs =>
+                        cs.course_code === v.course_code &&
+                        Number(cs.section_id) === Number(sec.section_id) &&
+                        (cs.section_is_open_elective !== null ? cs.section_is_open_elective === 1 : v.is_open_elective === 1) &&
+                        Number(cs.section_is_open_elective !== null && cs.section_is_open_elective === 1 ? (cs.section_open_elective_number ?? v.open_elective_number) : v.open_elective_number) === Number(oeNum)
                     );
+                })
+            );
 
-                    const hTheory = allTheoryComps.length;
-                    console.log(`[DEBUG OE] course=${cCode} theoryComps=${allTheoryComps.length} hTheory=${hTheory}`);
+            for (let h = 0; h < theoryHours; h++) {
+                let placed = false;
 
-                    if (hTheory > theoryHours) theoryHours = hTheory;
-                }
+                oeLoop:
+                for (const day of shuffle(DAYS)) {
+                    if (oeUsedDays.has(day)) continue;
 
-                if (theoryHours === 0) continue;
+                    let skipReasons = { facBusy: 0, roomsFull: 0, secBusy: 0 };
 
-                console.log(`[OE GROUP] oeNum=${oeNum} semNum=${semNum} finalTheory=${theoryHours}`);
+                    for (const ts of schedulableByDay[day]) {
 
+                        // All eligible sections must be free at this timeslot
+                        const allFree = oeEligibleSecs.every(sec =>
+                            isFree(occ, ts.timeslot_id, null, null, null, sec.section_id, null, oeNum + '_THEORY')
+                        );
+                        if (!allFree) { skipReasons.secBusy++; continue; }
 
-                // start placing the theory slots for these electives
-                for (let h = 0; h < theoryHours; h++) {
-                    let placed = false;
+                        const assignments = [];
+                        let feasible = true;
+                        const assignedRoomsInGroup = new Set();
 
-                    oeLoop:
-                    for (const day of shuffle(DAYS)) {
-                        if (
-                            oeUsedDays.has(`${semNum}_${day}`)
-                        ) continue;  // 1 vertical slot per day max for THIS OE number
-
-                        let skipReasons = { facBusy: 0, roomsFull: 0, secBusy: 0 };
-
-
-                        for (const ts of schedulableByDay[day]) {
-
-                            const allFree = semSecs.every(sec =>
-                                isFree(occ, ts.timeslot_id, null, null, null, sec.section_id, null, oeNum)
+                        for (const { courseCode, representative } of group) {
+                            const courseTheoryComps = courseComponents.filter(
+                                cc => Number(cc.course_id) === Number(representative.course_id) && cc.component_type === 'THEORY'
                             );
-                            if (!allFree) {
-                                skipReasons.secBusy++;
-                                continue;
+                            if (h >= courseTheoryComps.length) continue;
+
+                            const fac = getFacultyForCourse(representative.course_id).find(fa =>
+                                isFree(occ, ts.timeslot_id, fa.faculty_id, null, null, null, courseCode, oeNum + '_THEORY')
+                            );
+                            if (!fac) { feasible = false; skipReasons.facBusy++; break; }
+
+                            // Capacity: use the largest course_capacity across all variants
+                            const cap = (() => {
+                                const csRows = courseSections.filter(cs =>
+                                    group.flatMap(g => g.allVariants).some(v => Number(cs.course_id) === Number(v.course_id))
+                                );
+                                const maxCap = csRows.reduce((m, cs) => Math.max(m, cs.course_capacity || 0), 0);
+                                return maxCap || 60;
+                            })();
+
+                            const room = findClassroom(cap, ts.timeslot_id, null, courseCode, oeNum + '_THEORY', assignedRoomsInGroup);
+                            if (!room) { feasible = false; skipReasons.roomsFull++; break; }
+
+                            assignedRoomsInGroup.add(room.room_id);
+                            assignments.push({ courseCode, representative, fac, room });
+                        }
+
+                        if (!feasible) continue;
+
+                        // Commit to each eligible section, but only for courses whose branch_id matches
+                        for (const sec of oeEligibleSecs) {
+                            for (const { courseCode, fac, room } of assignments) {
+                                const { allVariants } = group.find(g => g.courseCode === courseCode);
+
+                                const v = allVariants.find(variant => Number(variant.program_id) === Number(sec.program_id));
+                                const isSectionRegistered = v && courseSections.some(cs =>
+                                    cs.course_code === v.course_code &&
+                                    Number(cs.section_id) === Number(sec.section_id) &&
+                                    (cs.section_is_open_elective !== null ? cs.section_is_open_elective === 1 : v.is_open_elective === 1) &&
+                                    Number(cs.section_is_open_elective !== null && cs.section_is_open_elective === 1 ? (cs.section_open_elective_number ?? v.open_elective_number) : v.open_elective_number) === Number(oeNum)
+                                );
+                                if (!isSectionRegistered) continue;
+
+                                const actualCourse = allVariants.find(v => Number(v.program_id) === Number(sec.program_id))
+                                    || allVariants[0];
+
+                                commitEntry(
+                                    ts.day, ts.timeslot_id,
+                                    sec.program_id, sec.branch_id, sec.semester_id,
+                                    sec.section_id, null,
+                                    actualCourse.course_id, courseCode, fac.faculty_id, room.room_id,
+                                    'THEORY'
+                                );
                             }
+                        }
 
-                            const assignments = [];
-                            let feasible = true;
+                        oeUsedDays.add(day);
+                        placed = true;
+                        break oeLoop;
+                    }
 
-                            const assignedRoomsInGroup = new Set();
-                            for (const course of group) {
-                                const courseTheoryComps = courseComponents.filter(
-                                    cc => Number(cc.course_id) === Number(course.course_id) && cc.component_type === 'THEORY'
+                    if (!placed)
+                        console.warn(`[OE] oeNum=${oeNum} h=${h + 1}: unplaced. Reasons: RoomsFull=${skipReasons.roomsFull}, FacBusy=${skipReasons.facBusy}, SecBusy=${skipReasons.secBusy}`);
+                }
+            }
+        }
+
+        // OE Lab Scheduling
+        for (const { oeNum, group } of globalOEGroups) {
+
+            // Find entries in this group that have LAB components
+            const labGroup = [];
+            const courseLabHours = {};
+            for (const { courseCode, representative, allVariants } of group) {
+                const labComps = courseComponents.filter(
+                    cc => Number(cc.course_id) === Number(representative.course_id) && cc.component_type === 'LAB'
+                );
+                if (labComps.length > 0) {
+                    labGroup.push({ courseCode, representative, allVariants });
+                    courseLabHours[representative.course_id] = labComps.length;
+                }
+            }
+            if (labGroup.length === 0) continue;
+
+            const labHours = Math.max(...Object.values(courseLabHours));
+            console.log(`[OE LAB GROUP] oeNum=${oeNum} finalLab=${labHours}`);
+
+            let labHoursLeft = labHours;
+            const oeUsedDays = new Set();
+            const scheduledHours = {};
+            for (const { representative } of labGroup) {
+                scheduledHours[representative.course_id] = 0;
+            }
+
+            // Eligible sections for lab OE
+            const oeLabEligibleSecs = allSections.filter(sec =>
+                labGroup.some(({ allVariants }) => {
+                    const v = allVariants.find(variant => Number(variant.program_id) === Number(sec.program_id));
+                    if (!v) return false;
+                    return courseSections.some(cs =>
+                        cs.course_code === v.course_code &&
+                        Number(cs.section_id) === Number(sec.section_id) &&
+                        (cs.section_is_open_elective !== null ? cs.section_is_open_elective === 1 : v.is_open_elective === 1) &&
+                        Number(cs.section_is_open_elective !== null && cs.section_is_open_elective === 1 ? (cs.section_open_elective_number ?? v.open_elective_number) : v.open_elective_number) === Number(oeNum)
+                    );
+                })
+            );
+
+            while (labHoursLeft > 0) {
+                const blockLen = Math.min(labHoursLeft, 3);
+                let placed = false;
+
+                labDayLoop:
+                for (const day of shuffle(DAYS)) {
+                    if (oeUsedDays.has(day)) continue;
+
+                    const validBlocks = getValidBlocks(slotsByDay[day], blockLen);
+
+                    for (const block of validBlocks) {
+                        // All eligible sections must be free for the entire block
+                        const allFree = oeLabEligibleSecs.every(sec =>
+                            block.every(ts =>
+                                isFree(occ, ts.timeslot_id, null, null, null, sec.section_id, null, oeNum + '_LAB')
+                            )
+                        );
+                        if (!allFree) continue;
+
+                        const assignments = [];
+                        let feasible = true;
+                        const assignedRoomsInGroup = new Set();
+
+                        for (const { courseCode, representative } of labGroup) {
+                            const activeTs = block.filter((ts, idx) =>
+                                scheduledHours[representative.course_id] + idx < courseLabHours[representative.course_id]
+                            );
+                            if (activeTs.length === 0) continue;
+
+                            const fac = getFacultyForCourse(representative.course_id).find(fa =>
+                                activeTs.every(ts =>
+                                    isFree(occ, ts.timeslot_id, fa.faculty_id, null, null, null, courseCode, oeNum + '_LAB')
+                                )
+                            );
+                            if (!fac) { feasible = false; break; }
+
+                            const cap = (() => {
+                                const csRows = courseSections.filter(cs =>
+                                    labGroup.flatMap(g => g.allVariants).some(v => Number(cs.course_id) === Number(v.course_id))
                                 );
-                                const courseTheoryHours = courseTheoryComps.length;
+                                const maxCap = csRows.reduce((m, cs) => Math.max(m, cs.course_capacity || 0), 0);
+                                return maxCap || 30;
+                            })();
 
-                                // If this course has already reached its individual theory hours, skip it in this slot
-                                if (h >= courseTheoryHours) continue;
+                            const room = findLabRoom(
+                                cap, activeTs, null, null, courseCode, oeNum + '_LAB', assignedRoomsInGroup, representative.course_id
+                            );
+                            if (!room) { feasible = false; break; }
 
-                                const fac = getFacultyForCourse(course.course_id).find(fa =>
-                                    isFree(occ, ts.timeslot_id, fa.faculty_id, null, null, null, course.course_code, oeNum)
-                                );
-                                if (!fac) {
-                                    feasible = false;
-                                    skipReasons.facBusy++;
-                                    break;
-                                }
+                            assignedRoomsInGroup.add(room.room_id);
+                            assignments.push({ courseCode, representative, allVariants: labGroup.find(g => g.courseCode === courseCode).allVariants, fac, room, activeTs });
+                        }
 
-                                const cbRow = courseBranches.find(
-                                    cb =>
-                                        Number(cb.course_id) === Number(course.course_id) &&
-                                        semSecs.some(sec => Number(sec.branch_id) === Number(cb.branch_id))
-                                );
-                                const cap = cbRow?.course_capacity || 60;
+                        if (!feasible) continue;
 
-                                const room = findClassroom(cap, ts.timeslot_id, null, course.course_code, oeNum, assignedRoomsInGroup);
-                                if (!room) {
-                                    feasible = false;
-                                    skipReasons.roomsFull++;
-                                    break;
-                                }
+                        for (const { courseCode, representative, allVariants, fac, room, activeTs } of assignments) {
+                            for (const ts of activeTs) {
+                                for (const sec of oeLabEligibleSecs) {
+                                    // Only commit if this section is registered for the variant matching its program and it matches the current OE group number
+                                    const v = allVariants.find(variant => Number(variant.program_id) === Number(sec.program_id));
+                                    const isSectionRegistered = v && courseSections.some(cs =>
+                                        cs.course_code === v.course_code &&
+                                        Number(cs.section_id) === Number(sec.section_id) &&
+                                        (cs.section_is_open_elective !== null ? cs.section_is_open_elective === 1 : v.is_open_elective === 1) &&
+                                        Number(cs.section_is_open_elective !== null && cs.section_is_open_elective === 1 ? (cs.section_open_elective_number ?? v.open_elective_number) : v.open_elective_number) === Number(oeNum)
+                                    );
+                                    if (!isSectionRegistered) continue;
 
-                                assignedRoomsInGroup.add(room.room_id);
-                                assignments.push({ course, fac, room });
-                            }
+                                    const actualCourse = allVariants.find(v => Number(v.program_id) === Number(sec.program_id))
+                                        || allVariants[0];
 
-                            if (!feasible) continue;
-
-                            for (const sec of semSecs) {
-                                for (const { course, fac, room } of assignments) {
-                                    const actualCourse = semCourses.find(c => c.course_code === course.course_code && c.program_id === sec.program_id) || course;
                                     commitEntry(
                                         ts.day, ts.timeslot_id,
                                         sec.program_id, sec.branch_id, sec.semester_id,
                                         sec.section_id, null,
-                                        actualCourse.course_id, course.course_code, fac.faculty_id, room.room_id,
-                                        'THEORY'
+                                        actualCourse.course_id, courseCode, fac.faculty_id, room.room_id,
+                                        'LAB'
                                     );
                                 }
                             }
-
-                            oeUsedDays.add(`${semNum}_${day}`);
-                            placed = true;
-                            break oeLoop;
+                            scheduledHours[representative.course_id] += activeTs.length;
                         }
 
-                        if (!placed)
-                            console.warn(`[OE] semNum=${semNum} oeNum=${oeNum} h=${h + 1}: unplaced. Reasons: RoomsFull=${skipReasons.roomsFull}, FacBusy=${skipReasons.facBusy}, SecBusy=${skipReasons.secBusy}`);
+                        oeUsedDays.add(day);
+                        placed = true;
+                        labHoursLeft -= blockLen;
+                        break labDayLoop;
                     }
+                }
+
+                if (!placed) {
+                    console.warn(`[OE LAB] oeNum=${oeNum} ${blockLen}hr block: unplaced.`);
+                    break;
                 }
             }
         }
-
-        // Open Elective Lab Scheduling
-        for (const { semNum, semSecs, semCourses } of semesterOEData) {
-            if (!semSecs.length || !semCourses.length) continue;
-
-            const oeMap = {};
-            for (const c of semCourses) {
-                if (c.open_elective_number) {
-                    (oeMap[c.open_elective_number] ??= []).push(c);
-                }
-            }
-
-            const oeGroups = [];
-            for (const [oeNumber, courses] of Object.entries(oeMap)) {
-                const uniqueGroupMap = new Map();
-                for (const c of courses) uniqueGroupMap.set(c.course_code, c);
-                const group = Array.from(uniqueGroupMap.values());
-
-                const groupWithFac = group.filter(c => getFacultyForCourse(c.course_id).length > 0);
-                if (groupWithFac.length > 0) {
-                    oeGroups.push({ oeNum: oeNumber, group: groupWithFac });
-                }
-            }
-            oeGroups.sort((a, b) => b.group.length - a.group.length);
-
-            for (const { oeNum, group } of oeGroups) {
-                // Find courses in the group that actually have LAB components
-                const labCourses = [];
-                const courseLabHours = {};
-                for (const course of group) {
-                    const allLabComps = courseComponents.filter(
-                        cc => Number(cc.course_id) === Number(course.course_id) && cc.component_type === 'LAB'
-                    );
-                    if (allLabComps.length > 0) {
-                        labCourses.push(course);
-                        courseLabHours[course.course_id] = allLabComps.length;
-                    }
-                }
-
-                // If no courses in this OE group have a lab, skip the group
-                if (labCourses.length === 0) continue;
-
-                // Find max lab hours in group
-                const labHours = Math.max(...Object.values(courseLabHours));
-                console.log(`[OE LAB GROUP] oeNum=${oeNum} semNum=${semNum} finalLab=${labHours}`);
-
-                let labHoursLeft = labHours;
-                const oeUsedDays = new Set();
-                const scheduledHours = {};
-                for (const course of labCourses) {
-                    scheduledHours[course.course_id] = 0;
-                }
-
-                while (labHoursLeft > 0) {
-                    const blockLen = Math.min(labHoursLeft, 3);
-                    let placed = false;
-
-                    labDayLoop:
-                    for (const day of shuffle(DAYS)) {
-                        if (oeUsedDays.has(`${semNum}_${day}`)) continue;
-
-                        const validBlocks = getValidBlocks(slotsByDay[day], blockLen);
-
-                        blockLoop:
-                        for (const block of validBlocks) {
-                            // Check if this block is free for all sections in the semester
-                            const allFree = semSecs.every(sec =>
-                                block.every(ts =>
-                                    isFree(occ, ts.timeslot_id, null, null, null, sec.section_id, null, oeNum)
-                                )
-                            );
-                            if (!allFree) continue;
-
-                            const assignments = [];
-                            let feasible = true;
-                            const assignedRoomsInGroup = new Set();
-
-                            for (const course of labCourses) {
-                                // Determine active timeslots in this block for this specific course
-                                const activeTs = block.filter((ts, idx) => scheduledHours[course.course_id] + idx < courseLabHours[course.course_id]);
-                                if (activeTs.length === 0) continue;
-
-                                const fac = getFacultyForCourse(course.course_id).find(fa =>
-                                    activeTs.every(ts =>
-                                        isFree(occ, ts.timeslot_id, fa.faculty_id, null, null, null, course.course_code, oeNum)
-                                    )
-                                );
-                                if (!fac) {
-                                    feasible = false;
-                                    break;
-                                }
-
-                                const cbRow = courseBranches.find(
-                                    cb =>
-                                        Number(cb.course_id) === Number(course.course_id) &&
-                                        semSecs.some(sec => Number(sec.branch_id) === Number(cb.branch_id))
-                                );
-                                const cap = cbRow?.course_capacity || 30;
-
-                                // Find a lab room free during the active timeslots
-                                const room = findLabRoom(
-                                    cap,
-                                    activeTs,
-                                    null,
-                                    null,
-                                    course.course_code,
-                                    oeNum,
-                                    assignedRoomsInGroup,
-                                    course.course_id
-                                );
-
-                                if (!room) {
-                                    feasible = false;
-                                    break;
-                                }
-
-                                assignedRoomsInGroup.add(room.room_id);
-                                assignments.push({ course, fac, room, activeTs });
-                            }
-
-                            if (!feasible) continue;
-
-                            // Commit entries only for active timeslots
-                            for (const { course, fac, room, activeTs } of assignments) {
-                                for (const ts of activeTs) {
-                                    for (const sec of semSecs) {
-                                        const actualCourse = semCourses.find(c => c.course_code === course.course_code && c.program_id === sec.program_id) || course;
-                                        commitEntry(
-                                            ts.day, ts.timeslot_id,
-                                            sec.program_id, sec.branch_id, sec.semester_id,
-                                            sec.section_id, null,
-                                            actualCourse.course_id, course.course_code, fac.faculty_id, room.room_id,
-                                            'LAB'
-                                        );
-                                    }
-                                }
-                                scheduledHours[course.course_id] += activeTs.length;
-                            }
-
-                            oeUsedDays.add(`${semNum}_${day}`);
-                            placed = true;
-                            labHoursLeft -= blockLen;
-                            break labDayLoop;
-                        }
-                    }
-
-                    if (!placed) {
-                        console.warn(`[OE LAB] semNum=${semNum} oeNum=${oeNum} ${blockLen}hr block: unplaced.`);
-                        break;
-                    }
-                }
-            }
-        }
-
-
 
         for (const sem of semesters) {
             const semSecs = allSections.filter(s => s.semester_id === sem.semester_id);
             if (!semSecs.length) continue;
 
-            // sort sections so the ones with the most classes get first pick of slots
             semSecs.sort((a, b) => {
                 const h = sec => allCourses
                     .filter(c =>
-                        !c.is_open_elective && c.semester_id === sem.semester_id &&
-                        courseBranches.some(cb =>
-                            cb.course_code === c.course_code && cb.branch_id === sec.branch_id)
+                        !isCourseOEForSection(c, sec.section_id, courseSections) && c.semester_id === sem.semester_id &&
+                        courseSections.some(cs =>
+                            cs.course_code === c.course_code && cs.section_id === sec.section_id)
                     )
                     .reduce((sum, c) => {
                         const usage = courseCodeUsage[c.course_code] || 1;
@@ -901,7 +927,7 @@ exports.generateMasterTimetable = async (req, res) => {
                 return h(b) - h(a);
             });
 
-            // give priority to B.Des and sections that have strict lab requirements
+            // Give priority to B.Des and sections that have strict lab requirements
             const prioritizedSecs = [...semSecs].sort((a, b) => {
                 const isADes = a.section_name.includes('DS') || a.section_name.includes('F');
                 const isBDes = b.section_name.includes('DS') || b.section_name.includes('F');
@@ -914,16 +940,16 @@ exports.generateMasterTimetable = async (req, res) => {
                 const secSubs = allSubsections.filter(s => Number(s.section_id) === Number(section.section_id));
 
                 const sectionCourses = allCourses.filter(c =>
-                    !c.is_open_elective && Number(c.semester_id) === Number(sem.semester_id) &&
-                    courseBranches.some(cb =>
-                        Number(cb.course_id) === Number(c.course_id) && Number(cb.branch_id) === Number(section.branch_id))
+                    !isCourseOEForSection(c, section.section_id, courseSections) && Number(c.semester_id) === Number(sem.semester_id) &&
+                    courseSections.some(cs =>
+                        cs.course_code === c.course_code && Number(cs.section_id) === Number(section.section_id))
                 );
                 if (!sectionCourses.length) continue;
 
                 const dayLoad = Object.fromEntries(DAYS.map(d => [d, 0]));
                 const courseDay = {};
 
-                // handle lab scheduling (needs consecutive blocks)
+                // Handle lab scheduling (needs consecutive blocks)
 
                 for (const course of sectionCourses) {
                     const allLabComps = courseComponents.filter(
@@ -934,12 +960,12 @@ exports.generateMasterTimetable = async (req, res) => {
 
                     if (targetHours === 0) continue;
 
-                    const cbRow = courseBranches.find(cb =>
-                        cb.course_id === course.course_id && cb.branch_id === section.branch_id);
+                    const cbRow = courseSections.find(cs =>
+                        cs.course_code === course.course_code && Number(cs.section_id) === Number(section.section_id));
 
                     const totalLabHours = targetHours;
                     const labRows = allLabComps.slice(0, targetHours);
-                    const isSplit = cbRow?.branch_lab_group_type === 'SPLIT' || (cbRow?.branch_lab_group_type !== 'COMBINED' && labRows[0].lab_group_type === 'SPLIT');
+                    const isSplit = cbRow?.section_lab_group_type === 'SPLIT' || (cbRow?.section_lab_group_type !== 'COMBINED' && labRows[0].lab_group_type === 'SPLIT');
                     const targets = (isSplit && secSubs.length)
                         ? secSubs
                         : [{ subsection_id: null, subsection_capacity: null }];
@@ -1020,18 +1046,17 @@ exports.generateMasterTimetable = async (req, res) => {
                     }
                 }
 
-                // handle theory and tutorial tasks (single slots)
+                // Handle theory and tutorial tasks (single slots)
 
                 const theoryTasks = [];
                 for (const course of sectionCourses) {
-                    const cbRow = courseBranches.find(cb =>
-                        cb.course_id === course.course_id && cb.branch_id === section.branch_id);
+                    const cbRow = courseSections.find(cs =>
+                        cs.course_code === course.course_code && Number(cs.section_id) === Number(section.section_id));
                     const cap = cbRow?.course_capacity || 0;
 
                     const allComps = courseComponents.filter(cc =>
                         Number(cc.course_id) === Number(course.course_id) && cc.component_type !== 'LAB'
                     );
-                    // make sure we schedule all the required theory hours
                     const targetCount = allComps.length;
                     const compsToSchedule = allComps;
 
@@ -1099,13 +1124,13 @@ exports.generateMasterTimetable = async (req, res) => {
                         }
                     }
 
-                    // if the first pass didn't work, try every possible remaining slot
+                    // If the first pass didn't work, try every possible remaining slot
                     if (!placed) {
                         relaxLoop:
                         for (const day of shuffle(DAYS)) {
                             if ((dayLoad[day] || 0) >= 8) continue;
 
-                            // don't put the same course twice on the same day
+                            // Don't put the same course twice on the same day
                             if (courseDay[`${course.course_code}_${day}`]) continue;
 
                             for (const ts of shuffle(schedulableByDay[day])) {
@@ -1135,7 +1160,7 @@ exports.generateMasterTimetable = async (req, res) => {
                         console.warn(`[THEORY] Unplaced: ${course.course_code}/${compType} for section ${section.section_name} (Rooms/Faculty/Section slots filled)`);
                 }
 
-                // try to fix days that have zero classes to balance things out
+                // Try to fix days that have zero classes to balance things out
 
                 for (const emptyDay of DAYS) {
                     if (dayLoad[emptyDay] > 0) continue;
@@ -1144,7 +1169,7 @@ exports.generateMasterTimetable = async (req, res) => {
                         row[5] === section.section_id &&
                         row[11] === 'THEORY' &&
                         row[6] === null &&
-                        !allCourses.find(c => c.course_id === row[7])?.is_open_elective
+                        !isCourseOEForSection(allCourses.find(c => c.course_id === row[7]), section.section_id, courseSections)
                     );
                     if (!candidate) continue;
 
@@ -1152,7 +1177,7 @@ exports.generateMasterTimetable = async (req, res) => {
                     if (courseDay[`${courseCode}_${emptyDay}`]) continue;
 
                     const courseObj = allCourses.find(c => c.course_id === courseId);
-                    const oeNum = courseObj?.is_open_elective === 1 ? courseObj.open_elective_number : null;
+                    const oeNum = getOENumberForSection(courseObj, section.section_id, courseSections);
 
                     const newTs = schedulableByDay[emptyDay].find(ts =>
                         isFree(occ, ts.timeslot_id, facId, roomId, null, section.section_id, courseCode, oeNum)
@@ -1217,7 +1242,7 @@ exports.addManualEntry = async (req, res) => {
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
-        // get basic details for this section
+        // Get basic details for this section
         const [[secInfo]] = await conn.query(`
             SELECT s.section_id, s.branch_id, s.semester_id, s.section_name,
                    sem.program_id, sem.semester_number
@@ -1225,19 +1250,38 @@ exports.addManualEntry = async (req, res) => {
             WHERE s.section_id = ? AND s.institute_id = ? AND sem.institute_id = ?`, [section_id, req.user.institute_id, req.user.institute_id]);
         if (!secInfo) { await conn.rollback(); return res.status(400).json({ error: 'Section not found' }); }
 
-        // get course details
+        // Get course details
         const [[courseInfo]] = await conn.query('SELECT * FROM courses WHERE course_id = ? AND institute_id = ?', [course_id, req.user.institute_id]);
         if (!courseInfo) { await conn.rollback(); return res.status(400).json({ error: 'Course not found' }); }
         const course_code = courseInfo.course_code;
 
-        // get timeslot details
+        // Load all courses and section course details for overrides
+        const [allCourses] = await conn.query('SELECT * FROM courses WHERE institute_id = ?', [req.user.institute_id]);
+        const [courseSections] = await conn.query('SELECT * FROM course_section WHERE institute_id = ?', [req.user.institute_id]);
+        const courseBranches = courseSections;
+        const isOE = isCourseOEForSection(courseInfo, secInfo.section_id, courseSections);
+        const oeNum = getOENumberForSection(courseInfo, secInfo.section_id, courseSections);
+
+        // Check if course is registered for this section, or if it's an Open Elective
+        if (!isOE) {
+            const [[courseSecCheck]] = await conn.query(
+                'SELECT 1 FROM course_section WHERE course_code = ? AND section_id = ? AND institute_id = ?',
+                [course_code, section_id, req.user.institute_id]
+            );
+            if (!courseSecCheck) {
+                await conn.rollback();
+                return res.status(400).json({ error: 'This course is not assigned to this section in Course Section Assignment.' });
+            }
+        }
+
+        // Get timeslot details
         const [[tsInfo]] = await conn.query('SELECT * FROM time_slots WHERE timeslot_id = ? AND institute_id = ?', [timeslot_id, req.user.institute_id]);
         if (!tsInfo) { await conn.rollback(); return res.status(400).json({ error: 'Timeslot not found' }); }
         if (tsInfo.is_break) {
             await conn.rollback(); return res.status(400).json({ error: 'Cannot schedule in break slot' });
         }
 
-        // check how many hours this course actually needs
+        // Check how many hours this course actually needs
         const [allComponents] = await conn.query(
             'SELECT * FROM course_components WHERE course_id = ? AND component_type = ? AND institute_id = ?',
             [course_id, component_type, req.user.institute_id]);
@@ -1247,7 +1291,7 @@ exports.addManualEntry = async (req, res) => {
         }
         const maxHours = allComponents.length;
 
-        // see how many hours are already booked (handles split groups too)
+        // See how many hours are already booked (handles split groups too)
         let usedQ = `SELECT COUNT(*) as usedHours FROM ${tbl(req)} WHERE course_id = ? AND section_id = ? AND component_type = ? AND institute_id = ?`;
         let usedP = [course_id, section_id, component_type, req.user.institute_id];
         if (subsection_id) {
@@ -1267,32 +1311,40 @@ exports.addManualEntry = async (req, res) => {
         }
 
         let targetSections = [secInfo];
-        if (courseInfo.is_open_elective === 1) {
-            const [allSecs] = await conn.query(`
+        if (isOE) {
+            const [assignedSecRows] = await conn.query(`
                 SELECT s.section_id, s.branch_id, s.semester_id, sem.program_id 
-                FROM section s 
-                JOIN semester sem ON s.semester_id = sem.semester_id 
-                WHERE sem.semester_number = ? AND s.institute_id = ? AND sem.institute_id = ?`,
-                [secInfo.semester_number, req.user.institute_id, req.user.institute_id]);
-            targetSections = allSecs;
+                FROM course_section cs
+                JOIN section s ON cs.section_id = s.section_id AND s.institute_id = cs.institute_id
+                JOIN semester sem ON s.semester_id = sem.semester_id AND sem.institute_id = s.institute_id
+                WHERE cs.course_code = ? AND sem.program_id = ? AND cs.institute_id = ?`,
+                [course_code, secInfo.program_id, req.user.institute_id]);
+            if (assignedSecRows.length > 0) {
+                targetSections = assignedSecRows;
+            }
         }
 
-        // find the faculty assigned to this course and section
-        const [facAllocations] = await conn.query(`
+        // Find the faculty assigned to this course
+        let facQ = `
             SELECT fa.faculty_id, f.faculty_name, f.faculty_short
             FROM faculty_allocation fa
             JOIN faculty f ON fa.faculty_id = f.faculty_id AND f.institute_id = fa.institute_id
-            WHERE fa.course_id = ? AND fa.section_id = ? AND fa.institute_id = ?`,
-            [courseInfo.course_id, section_id, req.user.institute_id]);
+            WHERE fa.course_id = ? AND fa.institute_id = ?`;
+        let facP = [courseInfo.course_id, req.user.institute_id];
+        if (!isOE) {
+            facQ += ' AND fa.section_id = ?';
+            facP.push(section_id);
+        }
+        const [facAllocations] = await conn.query(facQ, facP);
         if (facAllocations.length === 0) {
             await conn.rollback();
-            return res.status(400).json({ error: 'No faculty allocated to this course for this section' });
+            return res.status(400).json({ error: 'No faculty allocated to this course' });
         }
 
-        // handle room capacity checks
+        // Handle room capacity checks
         const [[cbRow]] = await conn.query(
-            'SELECT course_capacity FROM course_branch WHERE course_id = ? AND branch_id = ? AND institute_id = ?',
-            [course_id, secInfo.branch_id, req.user.institute_id]);
+            'SELECT course_capacity FROM course_section WHERE course_id = ? AND institute_id = ? ORDER BY (section_id = ?) DESC LIMIT 1',
+            [course_id, req.user.institute_id, secInfo.section_id]);
 
         let reqCap = cbRow?.course_capacity || 60;
         if (subsection_id) {
@@ -1301,7 +1353,7 @@ exports.addManualEntry = async (req, res) => {
         }
 
         if (component_type === 'THEORY' || component_type === 'TUTORIAL') {
-            // check if the section is already in a class
+            // Check if the section is already in a class
             for (const tSec of targetSections) {
                 const [existingClasses] = await conn.query(`
                     SELECT m.*, c.is_open_elective, c.open_elective_number 
@@ -1311,29 +1363,67 @@ exports.addManualEntry = async (req, res) => {
                     [tSec.section_id, timeslot_id, req.user.institute_id]);
 
                 if (existingClasses.length > 0) {
-                    const isSameOE = courseInfo.is_open_elective === 1 &&
-                        existingClasses.every(e => e.open_elective_number === courseInfo.open_elective_number && e.is_open_elective === 1);
+                    const newCourseOENum = getOENumberForSection(courseInfo, tSec.section_id, courseSections);
+                    const isSameOE = isOE &&
+                        existingClasses.every(e => {
+                            const eCourse = allCourses.find(ac => ac.course_code === e.course_code && ac.program_id === e.program_id);
+                            if (!isCourseOEForSection(eCourse, tSec.section_id, courseSections)) return false;
+                            const eOENum = getOENumberForSection(eCourse, tSec.section_id, courseSections);
+                            return String(eOENum ?? '') === String(newCourseOENum ?? '');
+                        });
 
                     if (!isSameOE) {
                         await conn.rollback();
+                        const existingOeNum = getOENumberForSection(
+                            allCourses.find(ac => ac.course_code === existingClasses[0].course_code && ac.program_id === existingClasses[0].program_id),
+                            tSec.section_id,
+                            courseSections
+                        );
+                        if (isOE && existingClasses.every(e => isCourseOEForSection(allCourses.find(ac => ac.course_code === e.course_code && ac.program_id === e.program_id), tSec.section_id, courseSections))) {
+                            return res.status(400).json({
+                                error: `Cannot add ${course_code} (OE-${newCourseOENum || '?'}) to OE-${existingOeNum || '?'} block.`
+                            });
+                        }
                         return res.status(400).json({ error: `Section ${tSec.section_id} already busy in this slot (Strict One Class per Section Rule).` });
                     }
                 }
             }
 
-            // find a faculty member who isn't busy
+            // Find a faculty member who isn't busy (or shares the same course)
             let freeFac = null;
+            let existingClassForFac = null;
             for (const fac of facAllocations) {
-                const [[fb]] = await conn.query(
-                    `SELECT 1 FROM ${tbl(req)} WHERE faculty_id = ? AND timeslot_id = ? AND institute_id = ?`,
+                const [fbRows] = await conn.query(
+                    `SELECT m.*, c.is_open_elective, c.course_code 
+                     FROM ${tbl(req)} m
+                     JOIN courses c ON (m.course_id = c.course_id OR (m.course_id IS NULL AND m.course_code = c.course_code AND m.program_id = c.program_id)) AND c.institute_id = m.institute_id
+                     WHERE m.faculty_id = ? AND m.timeslot_id = ? AND m.institute_id = ?`,
                     [fac.faculty_id, timeslot_id, req.user.institute_id]);
-                if (!fb) { freeFac = fac; break; }
+
+                const isFreeOrShared = fbRows.length === 0 || fbRows.every(e => e.course_code === course_code);
+
+                if (isFreeOrShared) {
+                    freeFac = fac;
+                    if (fbRows.length > 0) {
+                        existingClassForFac = fbRows[0];
+                    }
+                    break;
+                }
             }
             if (!freeFac) { await conn.rollback(); return res.status(400).json({ error: 'All allocated faculty are busy in this slot' }); }
 
-            // pick a room that fits and is available
+            // Pick a room that fits and is available
             let room = null;
-            if (room_id) {
+            if (existingClassForFac) {
+                if (room_id && Number(room_id) !== Number(existingClassForFac.room_id)) {
+                    const [[existingRoom]] = await conn.query(`SELECT room_name FROM rooms WHERE room_id = ? AND institute_id = ?`, [existingClassForFac.room_id, req.user.institute_id]);
+                    await conn.rollback();
+                    return res.status(400).json({ error: `This course is already scheduled in room ${existingRoom?.room_name || existingClassForFac.room_id} for this slot.` });
+                }
+                const [[rb]] = await conn.query(
+                    `SELECT * FROM rooms WHERE room_id = ? AND institute_id = ?`, [existingClassForFac.room_id, req.user.institute_id]);
+                room = rb;
+            } else if (room_id) {
                 // If room is specified, verify it's free
                 const [[rb]] = await conn.query(
                     `SELECT * FROM rooms WHERE room_id = ? AND institute_id = ?`, [room_id, req.user.institute_id]);
@@ -1345,14 +1435,19 @@ exports.addManualEntry = async (req, res) => {
                     return res.status(400).json({ error: `Room ${rb.room_name} capacity (${rb.capacity}) is less than required (${reqCap})` });
                 }
 
-                const [[busy]] = await conn.query(
-                    `SELECT 1 FROM ${tbl(req)} WHERE room_id = ? AND timeslot_id = ? AND institute_id = ?`,
+                const [busyRows] = await conn.query(
+                    `SELECT m.*, c.is_open_elective, c.course_code 
+                     FROM ${tbl(req)} m
+                     JOIN courses c ON (m.course_id = c.course_id OR (m.course_id IS NULL AND m.course_code = c.course_code AND m.program_id = c.program_id)) AND c.institute_id = m.institute_id
+                     WHERE m.room_id = ? AND m.timeslot_id = ? AND m.institute_id = ?`,
                     [room_id, timeslot_id, req.user.institute_id]);
-                if (busy) { await conn.rollback(); return res.status(400).json({ error: `Selected room ${rb.room_name} is already busy in this slot` }); }
+
+                const isRoomFreeOrShared = busyRows.length === 0 || busyRows.every(e => e.course_code === course_code);
+                if (!isRoomFreeOrShared) { await conn.rollback(); return res.status(400).json({ error: `Selected room ${rb.room_name} is already busy in this slot` }); }
 
                 room = rb;
             } else {
-                // if no room was picked, find the best fit automatically
+                // If no room was picked, find the best fit automatically
                 const [rooms] = await conn.query(`
                     SELECT * FROM rooms WHERE room_type = 'CLASSROOM' AND capacity >= ? AND institute_id = ?
                     AND room_id NOT IN (SELECT room_id FROM ${tbl(req)} WHERE timeslot_id = ? AND institute_id = ?)
@@ -1377,10 +1472,9 @@ exports.addManualEntry = async (req, res) => {
             const remainingHours = maxHours - usedHours;
             const blockLen = Math.min(remainingHours, 3);
 
-            // get every slot for the chosen day
+            // Get every slot for the chosen day
             const [daySlots] = await conn.query(
                 'SELECT * FROM time_slots WHERE day = ? AND institute_id = ? ORDER BY slot_order', [tsInfo.day, req.user.institute_id]);
-            // Filter out breaks to create blockPool
             const blockPool = daySlots.filter(s => !s.is_break);
 
             const clickedIdx = blockPool.findIndex(s => s.timeslot_id === parseInt(timeslot_id));
@@ -1395,14 +1489,14 @@ exports.addManualEntry = async (req, res) => {
 
             const labBlock = blockPool.slice(clickedIdx, clickedIdx + blockLen);
 
-            // double check the slots are back-to-back/consecutive
+            // Check if the slots are consecutive
             for (let i = 0; i < labBlock.length - 1; i++) {
                 if (labBlock[i + 1].slot_order !== labBlock[i].slot_order + 1) {
                     await conn.rollback(); return res.status(400).json({ error: 'Slots are not consecutive (cannot cross break slots)' });
                 }
             }
 
-            // check if the section is free for the entire lab window
+            // Check if the section is free for the entire lab window
             for (const slot of labBlock) {
                 for (const tSec of targetSections) {
                     const [existingClasses] = await conn.query(`
@@ -1413,35 +1507,72 @@ exports.addManualEntry = async (req, res) => {
                         [tSec.section_id, slot.timeslot_id, req.user.institute_id]);
 
                     if (existingClasses.length > 0) {
-
-                        const isSameOE = courseInfo.is_open_elective === 1 &&
-                            existingClasses.every(e => e.open_elective_number === courseInfo.open_elective_number && e.is_open_elective === 1);
+                        const newCourseOENum = getOENumberForSection(courseInfo, tSec.section_id, courseSections);
+                        const isSameOE = isOE &&
+                            existingClasses.every(e => {
+                                const eCourse = allCourses.find(ac => ac.course_code === e.course_code && ac.program_id === e.program_id);
+                                if (!isCourseOEForSection(eCourse, tSec.section_id, courseSections)) return false;
+                                const eOENum = getOENumberForSection(eCourse, tSec.section_id, courseSections);
+                                return String(eOENum ?? '') === String(newCourseOENum ?? '');
+                            });
 
                         if (!isSameOE) {
                             await conn.rollback();
+                            const existingOeNum = getOENumberForSection(
+                                allCourses.find(ac => ac.course_code === existingClasses[0].course_code && ac.program_id === existingClasses[0].program_id),
+                                tSec.section_id,
+                                courseSections
+                            );
+                            if (isOE && existingClasses.every(e => isCourseOEForSection(allCourses.find(ac => ac.course_code === e.course_code && ac.program_id === e.program_id), tSec.section_id, courseSections))) {
+                                return res.status(400).json({
+                                    error: `Cannot add ${course_code} (OE-${newCourseOENum || '?'}) to OE-${existingOeNum || '?'} block.`
+                                });
+                            }
                             return res.status(400).json({ error: `Section ${tSec.section_id} already busy at ${String(slot.start_time).slice(0, 5)} (Strict One Class per Section Rule).` });
                         }
                     }
                 }
             }
 
-            // make sure faculty is free for the whole lab block
+            // Check if faculty is free for the whole lab block (or shares the same course/component)
             let freeFac = null;
+            let existingClassForFac = null;
             for (const fac of facAllocations) {
                 let isBusy = false;
+                let firstFbRow = null;
                 for (const slot of labBlock) {
-                    const [[fb]] = await conn.query(
-                        `SELECT 1 FROM ${tbl(req)} WHERE faculty_id = ? AND timeslot_id = ? AND institute_id = ?`,
+                    const [fbRows] = await conn.query(
+                        `SELECT m.*, c.is_open_elective, c.course_code 
+                         FROM ${tbl(req)} m
+                         JOIN courses c ON (m.course_id = c.course_id OR (m.course_id IS NULL AND m.course_code = c.course_code AND m.program_id = c.program_id)) AND c.institute_id = m.institute_id
+                         WHERE m.faculty_id = ? AND m.timeslot_id = ? AND m.institute_id = ?`,
                         [fac.faculty_id, slot.timeslot_id, req.user.institute_id]);
-                    if (fb) { isBusy = true; break; }
+
+                    const isSlotFreeOrShared = fbRows.length === 0 || fbRows.every(e => e.course_code === course_code);
+                    if (!isSlotFreeOrShared) { isBusy = true; break; }
+                    if (fbRows.length > 0 && !firstFbRow) {
+                        firstFbRow = fbRows[0];
+                    }
                 }
-                if (!isBusy) { freeFac = fac; break; }
+                if (!isBusy) {
+                    freeFac = fac;
+                    existingClassForFac = firstFbRow;
+                    break;
+                }
             }
             if (!freeFac) { await conn.rollback(); return res.status(400).json({ error: 'Faculty busy across required lab slots' }); }
 
-            // find a lab room that works for the whole block
             let freeRoom = null;
-            if (room_id) {
+            if (existingClassForFac) {
+                if (room_id && Number(room_id) !== Number(existingClassForFac.room_id)) {
+                    const [[existingRoom]] = await conn.query(`SELECT room_name FROM rooms WHERE room_id = ? AND institute_id = ?`, [existingClassForFac.room_id, req.user.institute_id]);
+                    await conn.rollback();
+                    return res.status(400).json({ error: `This course is already scheduled in room ${existingRoom?.room_name || existingClassForFac.room_id} for this slot.` });
+                }
+                const [[rb]] = await conn.query(
+                    `SELECT * FROM rooms WHERE room_id = ? AND institute_id = ?`, [existingClassForFac.room_id, req.user.institute_id]);
+                freeRoom = rb;
+            } else if (room_id) {
                 // If room is specified, verify it's free for the entire block
                 const [[rb]] = await conn.query(`SELECT * FROM rooms WHERE room_id = ? AND institute_id = ?`, [room_id, req.user.institute_id]);
                 if (!rb) { await conn.rollback(); return res.status(400).json({ error: 'Selected lab room not found' }); }
@@ -1454,28 +1585,67 @@ exports.addManualEntry = async (req, res) => {
 
                 let isBusy = false;
                 for (const slot of labBlock) {
-                    const [[busy]] = await conn.query(
-                        `SELECT 1 FROM ${tbl(req)} WHERE room_id = ? AND timeslot_id = ? AND institute_id = ?`,
+                    const [busyRows] = await conn.query(
+                        `SELECT m.*, c.is_open_elective, c.course_code 
+                         FROM ${tbl(req)} m
+                         JOIN courses c ON (m.course_id = c.course_id OR (m.course_id IS NULL AND m.course_code = c.course_code AND m.program_id = c.program_id)) AND c.institute_id = m.institute_id
+                         WHERE m.room_id = ? AND m.timeslot_id = ? AND m.institute_id = ?`,
                         [room_id, slot.timeslot_id, req.user.institute_id]);
-                    if (busy) { isBusy = true; break; }
+
+                    const isRoomSlotFreeOrShared = busyRows.length === 0 || busyRows.every(e => e.course_code === course_code);
+                    if (!isRoomSlotFreeOrShared) { isBusy = true; break; }
                 }
                 if (isBusy) { await conn.rollback(); return res.status(400).json({ error: `Selected lab ${rb.room_name} is busy in one of the required slots` }); }
 
                 freeRoom = rb;
             } else {
+                // Check for admin preferred room first
+                const [prefRows] = await conn.query(
+                    'SELECT room_id FROM lab_room_preference WHERE course_id = ? AND (branch_id = ? OR branch_id IS NULL) AND institute_id = ? ORDER BY branch_id DESC LIMIT 1',
+                    [course_id, secInfo.branch_id, req.user.institute_id]
+                );
 
-                const [labRooms] = await conn.query(
-                    'SELECT * FROM rooms WHERE room_type = ? AND capacity >= ? AND institute_id = ? ORDER BY capacity ASC',
-                    ['LAB', reqCap, req.user.institute_id]);
-                for (const room of labRooms) {
-                    let isBusy = false;
-                    for (const slot of labBlock) {
-                        const [[rb]] = await conn.query(
-                            `SELECT 1 FROM ${tbl(req)} WHERE room_id = ? AND timeslot_id = ? AND institute_id = ?`,
-                            [room.room_id, slot.timeslot_id, req.user.institute_id]);
-                        if (rb) { isBusy = true; break; }
+                if (prefRows.length > 0) {
+                    const prefRoomId = prefRows[0].room_id;
+                    const [[pRoom]] = await conn.query('SELECT * FROM rooms WHERE room_id = ? AND institute_id = ?', [prefRoomId, req.user.institute_id]);
+                    if (pRoom && pRoom.capacity >= reqCap) {
+                        let isBusy = false;
+                        for (const slot of labBlock) {
+                            const [busyRows] = await conn.query(
+                                `SELECT m.*, c.is_open_elective, c.course_code 
+                                 FROM ${tbl(req)} m
+                                 JOIN courses c ON (m.course_id = c.course_id OR (m.course_id IS NULL AND m.course_code = c.course_code AND m.program_id = c.program_id)) AND c.institute_id = m.institute_id
+                                 WHERE m.room_id = ? AND m.timeslot_id = ? AND m.institute_id = ?`,
+                                [pRoom.room_id, slot.timeslot_id, req.user.institute_id]);
+
+                            const isRoomSlotFreeOrShared = busyRows.length === 0 || busyRows.every(e => e.course_code === course_code);
+                            if (!isRoomSlotFreeOrShared) { isBusy = true; break; }
+                        }
+                        if (!isBusy) {
+                            freeRoom = pRoom;
+                        }
                     }
-                    if (!isBusy) { freeRoom = room; break; }
+                }
+
+                if (!freeRoom) {
+                    const [labRooms] = await conn.query(
+                        'SELECT * FROM rooms WHERE room_type = ? AND capacity >= ? AND institute_id = ? ORDER BY capacity ASC',
+                        ['LAB', reqCap, req.user.institute_id]);
+                    for (const room of labRooms) {
+                        let isBusy = false;
+                        for (const slot of labBlock) {
+                            const [busyRows] = await conn.query(
+                                `SELECT m.*, c.is_open_elective, c.course_code 
+                                 FROM ${tbl(req)} m
+                                 JOIN courses c ON (m.course_id = c.course_id OR (m.course_id IS NULL AND m.course_code = c.course_code AND m.program_id = c.program_id)) AND c.institute_id = m.institute_id
+                                 WHERE m.room_id = ? AND m.timeslot_id = ? AND m.institute_id = ?`,
+                                [room.room_id, slot.timeslot_id, req.user.institute_id]);
+
+                            const isRoomSlotFreeOrShared = busyRows.length === 0 || busyRows.every(e => e.course_code === course_code);
+                            if (!isRoomSlotFreeOrShared) { isBusy = true; break; }
+                        }
+                        if (!isBusy) { freeRoom = room; break; }
+                    }
                 }
                 if (!freeRoom) { await conn.rollback(); return res.status(400).json({ error: 'Cannot place: no available lab room with sufficient capacity' }); }
             }

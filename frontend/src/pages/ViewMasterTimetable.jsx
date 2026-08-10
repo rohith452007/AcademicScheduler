@@ -11,7 +11,7 @@ const SEM_COLORS = [
     { header: '#fee2e2', text: '#991b1b', border: '#ef4444' },
     { header: '#f3e8ff', text: '#6b21a8', border: '#8b5cf6' },
 ];
-const DAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"];
+const DAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"];
 const isBreak = (s) => s && (s.is_break === 1 || s.is_break === true || s.is_break === "1");
 
 export default function ViewMasterTimetable() {
@@ -128,7 +128,7 @@ export default function ViewMasterTimetable() {
     };
 
     // open the popup to add a new class at a specific spot on the grid
-    const openPopover = (ev, timeslotId, sectionObj, semObj) => {
+    const openPopover = (ev, timeslotId, sectionObj, semObj, oeNum = null) => {
         const rect = ev.currentTarget.getBoundingClientRect();
         const CARD_W = 296;
         const CARD_H = 420;
@@ -138,23 +138,47 @@ export default function ViewMasterTimetable() {
 
         let py = rect.bottom + 8;
         if (py + CARD_H > window.innerHeight - 8) py = rect.top - CARD_H - 8;
-        setPopover({ px, py, timeslotId, sectionObj, semObj });
+        setPopover({ px, py, timeslotId, sectionObj, semObj, targetOeNum: oeNum });
         setMCourse(""); setMRoom(""); setMSubsection(""); setMType("THEORY"); setMMsg(""); setMOk(false);
     };
     const closePopover = () => { setPopover(null); setMMsg(""); setMOk(false); };
 
-    // only show courses that actually belong to this section/semester
+    // Show courses belonging to this section or any Open Elective courses offered in this program and semester
     const popoverCourses = popover
-        ? allCourses.filter(c =>
-            c.semester_id === popover.semObj.semester_id &&
-            (
-                c.is_open_elective === 1 ||
-                branchCourses.some(bc =>
-                    bc.course_code === c.course_code &&
-                    bc.branch_id === popover.sectionObj.branch_id
-                )
-            )
-        )
+        ? allCourses.filter(c => {
+            if (Number(c.program_id) !== Number(popover.semObj.program_id)) return false;
+            if (Number(c.semester_id) !== Number(popover.semObj.semester_id)) return false;
+
+            const isAssignedToSection = branchCourses.some(bc =>
+                bc.course_code === c.course_code &&
+                Number(bc.section_id) === Number(popover.sectionObj.section_id)
+            );
+
+            const isOE = Number(c.is_open_elective) === 1 || branchCourses.some(bc =>
+                bc.course_code === c.course_code &&
+                (Number(bc.section_is_open_elective) === 1 || Number(bc.is_open_elective) === 1)
+            );
+
+            const existingOeEntries = timetableData.filter(e =>
+                Number(e.timeslot_id) === Number(popover.timeslotId) &&
+                Number(e.semester_id) === Number(popover.semObj.semester_id) &&
+                Number(e.is_open_elective) === 1
+            );
+            const targetOeNum = popover.targetOeNum || existingOeEntries[0]?.open_elective_number;
+
+            if (targetOeNum !== undefined && targetOeNum !== null && targetOeNum !== "") {
+                if (!isOE) return false;
+                const cOeNum = c.open_elective_number ?? branchCourses.find(bc =>
+                    bc.course_code === c.course_code && (bc.section_open_elective_number || bc.open_elective_number)
+                )?.section_open_elective_number ?? branchCourses.find(bc => bc.course_code === c.course_code)?.open_elective_number;
+
+                if (String(cOeNum ?? '') !== String(targetOeNum)) return false;
+                return true;
+            }
+
+            if (isAssignedToSection) return true;
+            return isOE;
+        })
         : [];
 
     // send the new class entry to the database
@@ -286,8 +310,8 @@ export default function ViewMasterTimetable() {
     };
 
     // build all the table rows for a specific section
-    const renderRows = (daySlots, semEntries, sections, electiveSlotIds, theme, semObj) =>
-        sections.map(secObj => {
+    const renderRows = (daySlots, semEntries, sections, electiveSlotIds, theme, semObj) => {
+        return sections.map(secObj => {
             const secName = secObj.section_name;
             const cells = [];
             for (let i = 0; i < daySlots.length; i++) {
@@ -298,91 +322,103 @@ export default function ViewMasterTimetable() {
                     e.is_open_elective !== 1
                 );
 
-                // OE spanning cell
-                if (electiveSlotIds.includes(slot.timeslot_id)) {
-                    let span = 1;
-                    const getOesForSlot = (sId) => {
+                const isSemesterOeSlot = semEntries.some(e => e.timeslot_id === slot.timeslot_id && e.is_open_elective === 1);
+                if (isSemesterOeSlot) {
+                    const getOesForSectionAndSlot = (secId, sId) => {
                         return [...new Map(
                             semEntries
-                                .filter(e => e.timeslot_id === sId && e.is_open_elective === 1)
+                                .filter(e => e.timeslot_id === sId && e.section_id === secId && e.is_open_elective === 1)
                                 .map(e => [e.course_code + e.room_id + e.component_type, e])
                         ).values()];
                     };
 
-                    const oes = getOesForSlot(slot.timeslot_id);
-                    const isLabSlot = oes.some(el => el.component_type === "LAB");
+                    const getOeKeyForSection = (secId, sId) => {
+                        const list = getOesForSectionAndSlot(secId, sId);
+                        return list.map(e => e.course_code).sort().join(',');
+                    };
 
-                    if (isLabSlot) {
-                        while (true) {
-                            const nxt = daySlots[i + span];
-                            if (!nxt || isBreak(nxt)) break;
-                            if (!electiveSlotIds.includes(nxt.timeslot_id)) break;
+                    const thisOeKey = getOeKeyForSection(secObj.section_id, slot.timeslot_id);
+                    const isThisSectionInOe = thisOeKey !== '';
 
-                            const nxtOes = getOesForSlot(nxt.timeslot_id);
+                    if (isThisSectionInOe) {
+                        let span = 1;
+                        const sectionOes = getOesForSectionAndSlot(secObj.section_id, slot.timeslot_id);
+                        const isLabSlot = sectionOes.some(el => el.component_type === "LAB");
 
-                            if (nxtOes.length !== oes.length) break;
-                            const sameSet = oes.every(el =>
-                                nxtOes.some(nxtEl =>
-                                    nxtEl.course_code === el.course_code &&
-                                    nxtEl.room_id === el.room_id &&
-                                    nxtEl.component_type === el.component_type
-                                )
-                            );
-                            if (!sameSet) break;
-
-                            span++;
+                        if (isLabSlot) {
+                            while (true) {
+                                const nxt = daySlots[i + span];
+                                if (!nxt || isBreak(nxt)) break;
+                                const nxtOeKey = getOeKeyForSection(secObj.section_id, nxt.timeslot_id);
+                                if (nxtOeKey !== thisOeKey) break;
+                                span++;
+                            }
                         }
-                    }
 
-                    if (sections.indexOf(secObj) === 0) {
-                        const oeNum = oes[0]?.open_elective_number || "";
-                        cells.push(
-                            <td key={`oe-${i}`} rowSpan={sections.length} colSpan={span}
-                                className="p-4 bg-gray-50 text-center relative group align-middle"
-                                style={{ border: `1px solid ${theme.border}` }}>
-                                <div className="flex flex-col items-center justify-center gap-1">
-                                    <div className="text-gray-900 text-[14px] font-black uppercase mb-2 tracking-widest">
-                                        {oeNum ? `OE-${oeNum}` : "OE"}{isLabSlot ? " LAB" : ""}
+                        const secIndex = sections.indexOf(secObj);
+                        const isStartOfBlock = secIndex === 0 || getOeKeyForSection(sections[secIndex - 1].section_id, slot.timeslot_id) !== thisOeKey;
+
+                        if (isStartOfBlock) {
+                            let rowSpanCount = 1;
+                            while (
+                                secIndex + rowSpanCount < sections.length &&
+                                getOeKeyForSection(sections[secIndex + rowSpanCount].section_id, slot.timeslot_id) === thisOeKey
+                            ) {
+                                rowSpanCount++;
+                            }
+
+                            const oeNum = sectionOes[0]?.open_elective_number || "";
+                            cells.push(
+                                <td key={`oe-${i}`} rowSpan={rowSpanCount} colSpan={span}
+                                    className="p-4 bg-gray-50 text-center relative group align-middle"
+                                    style={{ border: `1px solid ${theme.border}` }}>
+                                    <div className="flex flex-col items-center justify-center gap-1">
+                                        <div className="text-gray-900 text-[14px] font-black uppercase mb-2 tracking-widest">
+                                            {oeNum ? `OE-${oeNum}` : "OE"}{isLabSlot ? " LAB" : ""}
+                                        </div>
+                                        {sectionOes.map((el, idx) => {
+                                            const elMasterIds = [];
+                                            for (let sIdx = 0; sIdx < span; sIdx++) {
+                                                const sId = daySlots[i + sIdx].timeslot_id;
+                                                for (let rIdx = 0; rIdx < rowSpanCount; rIdx++) {
+                                                    const sObj = sections[secIndex + rIdx];
+                                                    semEntries
+                                                        .filter(e => e.timeslot_id === sId && e.section_id === sObj.section_id && e.course_code === el.course_code && e.room_id === el.room_id)
+                                                        .forEach(e => elMasterIds.push(e.master_id));
+                                                }
+                                            }
+
+                                            return (
+                                                <div key={idx} className="text-[12px] text-gray-900 font-bold leading-tight py-1 relative group/oe">
+                                                    {el.course_code}-{el.faculty_short}-{el.room_name}
+                                                    {el.component_type === "TUTORIAL" ? " (Tut.)" : ""}
+
+                                                    {editMode && (
+                                                        <button onClick={(e) => confirmDelete(e, elMasterIds, `OE ${el.course_code}`)}
+                                                            title="Delete"
+                                                            className="absolute -right-6 top-1/2 -translate-y-1/2 w-4 h-4 rounded bg-red-100 hover:bg-red-500 text-red-600 hover:text-white text-[8px] flex items-center justify-center opacity-0 group-hover/oe:opacity-100 transition-opacity">
+                                                            🗑
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
                                     </div>
-                                    {oes.map((el, idx) => {
-                                        const elMasterIds = [];
-                                        for (let sIdx = 0; sIdx < span; sIdx++) {
-                                            const sId = daySlots[i + sIdx].timeslot_id;
-                                            semEntries
-                                                .filter(e => e.timeslot_id === sId && e.course_code === el.course_code && e.room_id === el.room_id)
-                                                .forEach(e => elMasterIds.push(e.master_id));
-                                        }
-
-                                        return (
-                                            <div key={idx} className="text-[12px] text-gray-900 font-bold leading-tight py-1 relative group/oe">
-                                                {el.course_code}-{el.faculty_short}-{el.room_name}
-                                                {el.component_type === "TUTORIAL" ? " (Tut.)" : ""}
-
-                                                {editMode && (
-                                                    <button onClick={(e) => confirmDelete(e, elMasterIds, `OE ${el.course_code}`)}
-                                                        title="Delete"
-                                                        className="absolute -right-6 top-1/2 -translate-y-1/2 w-4 h-4 rounded bg-red-100 hover:bg-red-500 text-red-600 hover:text-white text-[8px] flex items-center justify-center opacity-0 group-hover/oe:opacity-100 transition-opacity">
-                                                        🗑
-                                                    </button>
-                                                )}
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                                {editMode && (
-                                    <button onClick={(e) => openPopover(e, slot.timeslot_id, secObj, semObj)}
-                                        className="mt-4 w-6 h-6 rounded-full bg-blue-100 hover:bg-blue-500 text-blue-600 hover:text-white font-bold text-sm flex items-center justify-center mx-auto transition-colors"
-                                        title="Add another course to this OE block">
-                                        +
-                                    </button>
-                                )}
-                            </td>
-                        );
-                    } else {
-                        cells.push(null);
+                                    {editMode && (
+                                        <button onClick={(e) => openPopover(e, slot.timeslot_id, secObj, semObj, oeNum)}
+                                            className="mt-4 w-6 h-6 rounded-full bg-blue-100 hover:bg-blue-500 text-blue-600 hover:text-white font-bold text-sm flex items-center justify-center mx-auto transition-colors"
+                                            title="Add another course to this OE block">
+                                            +
+                                        </button>
+                                    )}
+                                </td>
+                            );
+                        } else {
+                            cells.push(null);
+                        }
+                        i += span - 1;
+                        continue;
                     }
-                    i += span - 1;
-                    continue;
                 }
 
                 // break
@@ -475,6 +511,7 @@ export default function ViewMasterTimetable() {
                 </tr>
             );
         });
+    };
 
     // layout of the whole page
     return (
@@ -603,6 +640,7 @@ export default function ViewMasterTimetable() {
                         {DAYS.map(day => {
                             const dayEntries = timetableData.filter(e => e.day === day);
                             const daySlots = allTimeSlots.filter(s => s.day === day).sort((a, b) => a.slot_order - b.slot_order);
+                            if (!daySlots.length) return null;
                             const semesters = [...allSemesters].sort((a, b) => a.semester_number - b.semester_number);
                             return (
                                 <div key={day} className="day-container bg-white p-8 rounded-3xl">
@@ -613,7 +651,10 @@ export default function ViewMasterTimetable() {
                                         const semId = semObj.semester_id;
                                         const progName = allPrograms.find(p => Number(p.program_id) === Number(semObj.program_id))?.program_name || "";
                                         const theme = SEM_COLORS[semIdx % SEM_COLORS.length];
-                                        const semEntries = dayEntries.filter(e => Number(e.semester_number) === Number(semObj.semester_number));
+                                        const semEntries = dayEntries.filter(e =>
+                                            Number(e.semester_number) === Number(semObj.semester_number) &&
+                                            Number(e.program_id) === Number(semObj.program_id)
+                                        );
                                         const sections = allSections
                                             .filter(s => Number(s.semester_id) === Number(semId))
                                             .sort((a, b) => a.section_name.localeCompare(b.section_name));
@@ -715,27 +756,41 @@ export default function ViewMasterTimetable() {
                             </div>
 
 
-                            {mType === "LAB" && allCourseComponents.some(cc => Number(cc.course_id) === Number(mCourse) && cc.component_type === "LAB" && cc.lab_group_type === "SPLIT") && (
-                                <div>
-                                    <label className="block text-xs font-bold text-gray-600 mb-1 uppercase text-blue-600">Lab Subsection (Group)</label>
-                                    <select
-                                        value={mSubsection}
-                                        onChange={e => setMSubsection(e.target.value)}
-                                        style={{ backgroundColor: "#eff6ff", borderColor: "#3b82f6" }}
-                                        className="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                    >
-                                        <option value="">— Select Group —</option>
-                                        {allSubsections
-                                            .filter(s => Number(s.section_id) === Number(popover.sectionObj.section_id))
-                                            .map(s => (
-                                                <option key={s.subsection_id} value={s.subsection_id}>
-                                                    {s.subsection_name}
-                                                </option>
-                                            ))}
-                                    </select>
-                                    <p className="text-[9px] text-blue-500 mt-1 font-medium">This course has split labs. Please select a group.</p>
-                                </div>
-                            )}
+                            {mType === "LAB" && (() => {
+                                const selectedCourseObj = allCourses.find(c => Number(c.course_id) === Number(mCourse));
+                                if (!selectedCourseObj) return false;
+                                const cbRow = branchCourses.find(bc =>
+                                    bc.course_code === selectedCourseObj.course_code &&
+                                    Number(bc.section_id) === Number(popover.sectionObj.section_id)
+                                );
+                                if (cbRow?.section_lab_group_type === 'SPLIT') return true;
+                                if (cbRow?.section_lab_group_type === 'COMBINED') return false;
+                                return allCourseComponents.some(cc =>
+                                    Number(cc.course_id) === Number(mCourse) &&
+                                    cc.component_type === 'LAB' &&
+                                    cc.lab_group_type === 'SPLIT'
+                                );
+                            })() && (
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-600 mb-1 uppercase text-blue-600">Lab Subsection (Group)</label>
+                                        <select
+                                            value={mSubsection}
+                                            onChange={e => setMSubsection(e.target.value)}
+                                            style={{ backgroundColor: "#eff6ff", borderColor: "#3b82f6" }}
+                                            className="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                        >
+                                            <option value="">— Select Group —</option>
+                                            {allSubsections
+                                                .filter(s => Number(s.section_id) === Number(popover.sectionObj.section_id))
+                                                .map(s => (
+                                                    <option key={s.subsection_id} value={s.subsection_id}>
+                                                        {s.subsection_name}
+                                                    </option>
+                                                ))}
+                                        </select>
+                                        <p className="text-[9px] text-blue-500 mt-1 font-medium">This course has split labs. Please select a group.</p>
+                                    </div>
+                                )}
                             <div>
                                 <label className="block text-xs font-bold text-gray-600 mb-1 uppercase">Room (Optional)</label>
                                 <select
@@ -746,7 +801,6 @@ export default function ViewMasterTimetable() {
                                 >
                                     <option value="">— Auto-allot Room —</option>
                                     {allRooms
-                                        .filter(r => mType === "LAB" ? r.room_type === "LAB" : r.room_type === "CLASSROOM")
                                         .sort((a, b) => a.room_name.localeCompare(b.room_name))
                                         .map(r => (
                                             <option key={r.room_id} value={r.room_id}>

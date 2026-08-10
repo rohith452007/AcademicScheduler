@@ -117,7 +117,7 @@ function ForgotPassword() {
     return (
         <div className="container">
             <h2><center>Password Recovery</center></h2>
-            
+
             {/* Step Indicators */}
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '25px', padding: '0 10px' }}>
                 <div style={{ textAlign: 'center', opacity: step === 1 ? 1 : 0.4, fontWeight: step === 1 ? 'bold' : 'normal' }}>
@@ -136,7 +136,7 @@ function ForgotPassword() {
 
             {error && <p className="error" style={{ color: 'red', backgroundColor: '#fee2e2', padding: '10px', borderRadius: '4px', textAlign: 'center', fontWeight: 'bold' }}>{error}</p>}
             {message && <p className="success" style={{ color: 'green', backgroundColor: '#e6ffe6', padding: '10px', borderRadius: '4px', textAlign: 'center', fontWeight: 'bold' }}>{message}</p>}
-            
+
             {/* Step 1: Email Form */}
             {step === 1 && (
                 <form onSubmit={handleSendCode}>

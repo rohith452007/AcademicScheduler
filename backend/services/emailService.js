@@ -1,40 +1,27 @@
-const axios = require("axios");
+const nodemailer = require('nodemailer');
 
-const BREVO_API_KEY = process.env.BREVO_API_KEY;
-const SMTP_FROM = process.env.SMTP_FROM;
+const SMTP_HOST = process.env.SMTP_HOST;
+const SMTP_PORT = process.env.SMTP_PORT || 587;
+const SMTP_USER = process.env.SMTP_USER;
+const SMTP_PASS = process.env.SMTP_PASS;
+const SMTP_FROM = process.env.SMTP_FROM || 'no-reply@timetableportal.com';
 
-// const SMTP_HOST = process.env.SMTP_HOST;
-// const SMTP_PORT = process.env.SMTP_PORT || 587;
-// const SMTP_USER = process.env.SMTP_USER;
-// const SMTP_PASS = process.env.SMTP_PASS;
-// const SMTP_FROM = process.env.SMTP_FROM || 'no-reply@timetableportal.com';
+let transporter = null;
 
-// let transporter = null;
-
-// if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
-//     console.log("SMTP_HOST:", SMTP_HOST);
-//     console.log("SMTP_PORT:", SMTP_PORT);
-//     console.log("SMTP_USER:", SMTP_USER);
-//     console.log("SMTP_FROM:", SMTP_FROM);
-
-//     transporter = nodemailer.createTransport({
-//     host: SMTP_HOST,
-//     port: Number(SMTP_PORT),
-//     secure: false,      // 587 uses STARTTLS
-//     requireTLS: true,
-//     family: 4,
-//     auth: {
-//         user: SMTP_USER,
-//         pass: SMTP_PASS
-//     },
-//     connectionTimeout: 10000,
-//     greetingTimeout: 10000,
-//     socketTimeout: 10000
-// });
-//     console.log('Email Service: SMTP Transporter configured.');
-// } else {
-//     console.log('Email Service: SMTP credentials missing. Reset codes will be logged to console.');
-// }
+if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
+    transporter = nodemailer.createTransport({
+        host: SMTP_HOST,
+        port: Number(SMTP_PORT),
+        secure: Number(SMTP_PORT) === 465,
+        auth: {
+            user: SMTP_USER,
+            pass: SMTP_PASS
+        }
+    });
+    console.log('Email Service: SMTP Transporter configured.');
+} else {
+    console.log('Email Service: SMTP credentials missing. Reset codes will be logged to console.');
+}
 
 /**
  * Sends a password reset OTP email via SMTP.
@@ -90,73 +77,21 @@ exports.sendResetCodeEmail = async (toEmail, username, code, instituteName = 'Ti
         `
     };
 
-    try {
-        await axios.post(
-            "https://api.brevo.com/v3/smtp/email",
-            {
-                sender: {
-                    name: instituteName,
-                    email: SMTP_FROM
-                },
-                to: [
-                    {
-                        email: toEmail,
-                        name: username
-                    }
-                ],
-                subject: `Password Reset Code - ${instituteName}`,
-                htmlContent: mailOptions.html
-            },
-            {
-                headers: {
-                    "accept": "application/json",
-                    "api-key": BREVO_API_KEY,
-                    "content-type": "application/json"
-                }
-            }
-        );
-
-        console.log(`✅ Password reset code sent to: ${toEmail}`);
-
-        return { sent: true };
-
-    } catch (error) {
-
-        console.error("BREVO API ERROR:");
-        console.error(error);
-
+    if (transporter) {
+        try {
+            await transporter.sendMail(mailOptions);
+            console.log(`✅ Password reset code sent to: ${toEmail}`);
+            return { sent: true };
+        } catch (error) {
+            console.error('Error sending email via SMTP:', error.message);
+        }
     }
 
-    // if (transporter) {
-    //     try {
-
-    //         console.log("Verifying SMTP connection...");
-
-    //         await transporter.verify();
-
-    //         console.log("SMTP verified successfully.");
-
-    //         await transporter.sendMail(mailOptions);
-
-    //         console.log(`Password reset code sent to: ${toEmail}`);
-
-    //         return { sent: true };
-
-    //     } catch (error) {
-
-    //         console.error("FULL SMTP ERROR:");
-    //         console.error(error);
-
-    //     }
-    // }
-
     // Console fallback when SMTP not configured
-    console.log('\n========================================================================');
     console.log('✉️  [LOCAL EMAIL LOG] PASSWORD RESET CODE');
     console.log(`To: ${toEmail}`);
     console.log(`Institute: ${instituteName}`);
     console.log(`Username: ${username}`);
     console.log(`Reset Code: ${code}`);
-    console.log('========================================================================\n');
     return { sent: true, loggedToConsole: true };
 };

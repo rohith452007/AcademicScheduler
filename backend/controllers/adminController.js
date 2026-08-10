@@ -199,7 +199,7 @@ exports.deleteBranch = async (req, res) => {
 exports.getSections = async (req, res) => {
     try {
         const [rows] = await db.query(`
-            SELECT s.*, b.branch_name, sem.semester_number, p.program_name
+            SELECT s.*, b.program_id, b.branch_name, sem.semester_number, p.program_name
             FROM section s 
             LEFT JOIN branch b ON s.branch_id = b.branch_id
             LEFT JOIN semester sem ON s.semester_id = sem.semester_id
@@ -252,7 +252,7 @@ exports.deleteSection = async (req, res) => {
 exports.getSubsections = async (req, res) => {
     try {
         const [rows] = await db.query(`
-            SELECT sub.*, s.section_name, b.branch_name, sem.semester_number, p.program_name
+            SELECT sub.*, s.branch_id, s.semester_id, b.program_id, s.section_name, b.branch_name, sem.semester_number, p.program_name
             FROM subsection sub 
             LEFT JOIN section s ON sub.section_id = s.section_id
             LEFT JOIN branch b ON s.branch_id = b.branch_id
@@ -327,11 +327,7 @@ exports.getFaculty = async (req, res) => {
 
 exports.createFaculty = async (req, res) => {
     try {
-        const { faculty_id, faculty_name, faculty_short, email, password } = req.body;
-
-        if (!password || password.trim() === '') {
-            return res.status(400).json({ error: 'Password is required when creating a faculty member' });
-        }
+        const { faculty_id, faculty_name, faculty_short, email } = req.body;
 
         const [existing] = await db.query('SELECT * FROM faculty WHERE (faculty_id = ? OR email = ?) AND institute_id = ?', [faculty_id, email, req.user.institute_id]);
         if (existing.length > 0) {
@@ -344,14 +340,6 @@ exports.createFaculty = async (req, res) => {
             "INSERT INTO faculty (faculty_id, faculty_name, faculty_short, email, institute_id) VALUES (?, ?, ?, ?, ?)",
             [faculty_id, faculty_name, faculty_short, email, req.user.institute_id]
         );
-
-        const [existingUser] = await db.query('SELECT * FROM users WHERE username = ? OR email = ?', [faculty_id, email]);
-        if (existingUser.length === 0) {
-            await db.query(
-                "INSERT INTO users (username, password, role, email, institute_id) VALUES (?, ?, ?, ?, ?)",
-                [faculty_id, password.trim(), 'faculty', email, req.user.institute_id]
-            );
-        }
 
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -474,10 +462,16 @@ exports.createCourse = async (req, res) => {
         );
 
         if (branch_id) {
-            await connection.query(
-                'INSERT INTO course_branch (course_code, branch_id, course_id, institute_id) VALUES (?, ?, ?, ?)',
-                [course_code, branch_id, courseResult.insertId, req.user.institute_id]
+            const [secs] = await connection.query(
+                'SELECT section_id FROM section WHERE branch_id = ? AND institute_id = ?',
+                [branch_id, req.user.institute_id]
             );
+            for (const sec of secs) {
+                await connection.query(
+                    'INSERT INTO course_section (course_code, section_id, course_id, institute_id) VALUES (?, ?, ?, ?)',
+                    [course_code, sec.section_id, courseResult.insertId, req.user.institute_id]
+                );
+            }
         }
 
         if (components) {
@@ -560,7 +554,7 @@ exports.deleteCourse = async (req, res) => {
         await connection.beginTransaction();
         const { id } = req.params;
         await connection.query('DELETE FROM course_components WHERE course_id = ? AND institute_id = ?', [id, req.user.institute_id]);
-        await connection.query('DELETE FROM course_branch WHERE course_id = ? AND institute_id = ?', [id, req.user.institute_id]);
+        await connection.query('DELETE FROM course_section WHERE course_id = ? AND institute_id = ?', [id, req.user.institute_id]);
         await connection.query('DELETE FROM faculty_allocation WHERE course_id = ? AND institute_id = ?', [id, req.user.institute_id]);
         await connection.query('DELETE FROM courses WHERE course_id = ? AND institute_id = ?', [id, req.user.institute_id]);
         await connection.commit();
@@ -608,6 +602,24 @@ exports.updateFacultyAllocation = async (req, res) => {
              WHERE faculty_id = ? AND course_id = ? AND branch_id = ? AND section_id = ? AND institute_id = ?`,
             [faculty_id, course_id, branch_id, section_id, old_faculty_id, old_course_id, old_branch_id, old_section_id, req.user.institute_id]
         );
+
+        if (old_faculty_id && old_faculty_id !== faculty_id) {
+            const targetCourseId = course_id || old_course_id;
+            const targetSecId = section_id || old_section_id;
+
+            await db.query(
+                `UPDATE master_timetable 
+                 SET faculty_id = ? 
+                 WHERE faculty_id = ? AND (course_id = ? OR course_code = (SELECT course_code FROM courses WHERE course_id = ? LIMIT 1)) AND section_id = ? AND institute_id = ?`,
+                [faculty_id, old_faculty_id, targetCourseId, targetCourseId, targetSecId, req.user.institute_id]
+            );
+            await db.query(
+                `UPDATE master_timetable_draft 
+                 SET faculty_id = ? 
+                 WHERE faculty_id = ? AND (course_id = ? OR course_code = (SELECT course_code FROM courses WHERE course_id = ? LIMIT 1)) AND section_id = ? AND institute_id = ?`,
+                [faculty_id, old_faculty_id, targetCourseId, targetCourseId, targetSecId, req.user.institute_id]
+            );
+        }
 
         res.json({ success: true });
     } catch (err) {
@@ -679,12 +691,13 @@ exports.updateCourseComponents = async (req, res) => {
 exports.getBranchCourses = async (req, res) => {
     try {
         const query = `
-            SELECT cb.*, c.course_name, b.branch_name, p.program_name, p.program_id as target_program_id
-            FROM course_branch cb
-            JOIN courses c ON cb.course_id = c.course_id AND c.institute_id = cb.institute_id
-            JOIN branch b ON cb.branch_id = b.branch_id AND b.institute_id = cb.institute_id
-            JOIN program p ON b.program_id = p.program_id AND p.institute_id = cb.institute_id
-            WHERE cb.institute_id = ?
+            SELECT cs.*, s.branch_id, s.semester_id, c.course_name, s.section_name, b.branch_name, p.program_name, p.program_id as target_program_id
+            FROM course_section cs
+            JOIN courses c ON cs.course_id = c.course_id AND c.institute_id = cs.institute_id
+            JOIN section s ON cs.section_id = s.section_id AND s.institute_id = cs.institute_id
+            JOIN branch b ON s.branch_id = b.branch_id AND b.institute_id = cs.institute_id
+            JOIN program p ON b.program_id = p.program_id AND p.institute_id = cs.institute_id
+            WHERE cs.institute_id = ?
         `;
         const [rows] = await db.query(query, [req.user.institute_id]);
         res.json(rows);
@@ -693,12 +706,16 @@ exports.getBranchCourses = async (req, res) => {
 
 exports.assignCourseBranch = async (req, res) => {
     try {
-        const { branch_id, course_code, course_capacity, branch_lab_group_type } = req.body;
-        const [existing] = await db.query('SELECT * FROM course_branch WHERE branch_id = ? AND course_code = ? AND institute_id = ?', [branch_id, course_code, req.user.institute_id]);
-        if (existing.length > 0) return res.status(400).json({ error: 'Course already assigned to this branch' });
+        const { section_id, course_code, course_capacity, section_lab_group_type, section_is_open_elective, section_open_elective_number } = req.body;
+        const [existing] = await db.query('SELECT * FROM course_section WHERE section_id = ? AND course_code = ? AND institute_id = ?', [section_id, course_code, req.user.institute_id]);
+        if (existing.length > 0) return res.status(400).json({ error: 'Course already assigned to this section' });
 
-        const [[branchRow]] = await db.query('SELECT program_id FROM branch WHERE branch_id = ? AND institute_id = ?', [branch_id, req.user.institute_id]);
-        const program_id = branchRow?.program_id || null;
+        const [[secRow]] = await db.query(`
+            SELECT s.branch_id, b.program_id 
+            FROM section s 
+            JOIN branch b ON s.branch_id = b.branch_id AND b.institute_id = s.institute_id
+            WHERE s.section_id = ? AND s.institute_id = ?`, [section_id, req.user.institute_id]);
+        const program_id = secRow?.program_id || null;
 
         const [courseRows] = await db.query(
             'SELECT course_id FROM courses WHERE course_code = ? AND program_id = ? AND institute_id = ? LIMIT 1',
@@ -712,8 +729,8 @@ exports.assignCourseBranch = async (req, res) => {
         }
 
         await db.query(
-            'INSERT INTO course_branch (branch_id, course_code, course_capacity, course_id, branch_lab_group_type, institute_id) VALUES (?, ?, ?, ?, ?, ?)',
-            [branch_id, course_code, course_capacity || null, course_id, branch_lab_group_type || 'COMBINED', req.user.institute_id]
+            'INSERT INTO course_section (section_id, course_code, course_capacity, course_id, section_lab_group_type, section_is_open_elective, section_open_elective_number, institute_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [section_id, course_code, course_capacity || null, course_id, section_lab_group_type || 'COMBINED', section_is_open_elective !== undefined ? section_is_open_elective : null, section_open_elective_number || null, req.user.institute_id]
         );
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -721,30 +738,30 @@ exports.assignCourseBranch = async (req, res) => {
 
 exports.updateCourseBranch = async (req, res) => {
     try {
-        const { old_branch_id, old_course_code, branch_id, course_code, course_capacity, course_id, branch_lab_group_type } = req.body;
+        const { old_section_id, old_course_code, section_id, course_code, course_capacity, course_id, section_lab_group_type, section_is_open_elective, section_open_elective_number } = req.body;
 
-        console.log(`[UPDATE] Course Branch:`, { old_branch_id, old_course_code });
+        console.log(`[UPDATE] Course Section:`, { old_section_id, old_course_code });
 
         await db.query(
-            'UPDATE course_branch SET branch_id = ?, course_code = ?, course_capacity = ?, course_id = ?, branch_lab_group_type = ? WHERE branch_id = ? AND course_code = ? AND institute_id = ?',
-            [branch_id, course_code, course_capacity, course_id, branch_lab_group_type || 'COMBINED', old_branch_id, old_course_code, req.user.institute_id]
+            'UPDATE course_section SET section_id = ?, course_code = ?, course_capacity = ?, course_id = ?, section_lab_group_type = ?, section_is_open_elective = ?, section_open_elective_number = ? WHERE section_id = ? AND course_code = ? AND institute_id = ?',
+            [section_id, course_code, course_capacity, course_id, section_lab_group_type || 'COMBINED', section_is_open_elective !== undefined ? section_is_open_elective : null, section_open_elective_number || null, old_section_id, old_course_code, req.user.institute_id]
         );
 
         res.json({ success: true });
     } catch (err) {
-        console.error('Update Course Branch Error:', err);
+        console.error('Update Course Section Error:', err);
         res.status(500).json({ error: err.message });
     }
 };
 
 exports.deleteCourseBranch = async (req, res) => {
     try {
-        const { branch_id, course_code } = req.query;
-        console.log(`[DELETE] Course Branch:`, { branch_id, course_code });
+        const { section_id, course_code } = req.query;
+        console.log(`[DELETE] Course Section:`, { section_id, course_code });
 
-        if (!branch_id || !course_code) return res.status(400).json({ error: 'Missing identifying fields' });
+        if (!section_id || !course_code) return res.status(400).json({ error: 'Missing identifying fields' });
 
-        const [result] = await db.query('DELETE FROM course_branch WHERE branch_id = ? AND course_code = ? AND institute_id = ?', [branch_id, course_code, req.user.institute_id]);
+        const [result] = await db.query('DELETE FROM course_section WHERE section_id = ? AND course_code = ? AND institute_id = ?', [section_id, course_code, req.user.institute_id]);
 
         if (result.affectedRows === 0) return res.status(404).json({ error: 'Course Branch link not found' });
         res.json({ success: true });
@@ -934,9 +951,12 @@ exports.createUser = async (req, res) => {
             if (existing[0].email === email) return res.status(400).json({ error: 'Email already exists' });
         }
 
+        const bcrypt = require('bcryptjs');
+        const hashedPassword = bcrypt.hashSync(password.trim(), 10);
+
         await db.query(
             'INSERT INTO users (username, password, role, email, institute_id) VALUES (?, ?, ?, ?, ?)',
-            [username, password.trim(), role, email, req.user.institute_id]
+            [username, hashedPassword, role, email, req.user.institute_id]
         );
         res.json({ success: true });
     } catch (err) {
@@ -950,9 +970,11 @@ exports.updateUser = async (req, res) => {
         const { username, password, role, email } = req.body;
 
         if (password && password.trim() !== '') {
+            const bcrypt = require('bcryptjs');
+            const hashedPassword = bcrypt.hashSync(password.trim(), 10);
             await db.query(
                 'UPDATE users SET username = ?, password = ?, role = ?, email = ? WHERE user_id = ? AND institute_id = ?',
-                [username, password.trim(), role, email, id, req.user.institute_id]
+                [username, hashedPassword, role, email, id, req.user.institute_id]
             );
         } else {
             await db.query(
@@ -1013,11 +1035,11 @@ exports.setLabRoomPreference = async (req, res) => {
         );
         if (!roomRow) return res.status(404).json({ error: 'Selected room not found' });
 
-        // Get course capacity from course_branch
+        // Get course capacity from course_section
         const [[capRow]] = await db.query(
-            `SELECT MAX(cb.course_capacity) as max_cap 
-             FROM course_branch cb 
-             WHERE cb.course_id = ? AND cb.institute_id = ?`,
+            `SELECT MAX(cs.course_capacity) as max_cap 
+             FROM course_section cs 
+             WHERE cs.course_id = ? AND cs.institute_id = ?`,
             [course_id, req.user.institute_id]
         );
         let reqCap = capRow?.max_cap || 30;
@@ -1033,12 +1055,12 @@ exports.setLabRoomPreference = async (req, res) => {
         if (compRow) {
             if (branch_id) {
                 const [[cbRow]] = await db.query(
-                    `SELECT branch_lab_group_type FROM course_branch 
-                     WHERE course_id = ? AND branch_id = ? AND institute_id = ?`,
-                    [course_id, branch_id, req.user.institute_id]
+                    `SELECT section_lab_group_type FROM course_section 
+                     WHERE course_id = ? AND section_id IN (SELECT section_id FROM section WHERE branch_id = ? AND institute_id = ?) AND institute_id = ? LIMIT 1`,
+                    [course_id, branch_id, req.user.institute_id, req.user.institute_id]
                 );
-                isSplit = cbRow?.branch_lab_group_type === 'SPLIT' ||
-                    (cbRow?.branch_lab_group_type !== 'COMBINED' && compRow.lab_group_type === 'SPLIT');
+                isSplit = cbRow?.section_lab_group_type === 'SPLIT' ||
+                    (cbRow?.section_lab_group_type !== 'COMBINED' && compRow.lab_group_type === 'SPLIT');
             } else {
                 isSplit = compRow.lab_group_type === 'SPLIT';
             }
@@ -1065,8 +1087,6 @@ exports.setLabRoomPreference = async (req, res) => {
         }
 
         if (course.is_open_elective === 1) {
-            // OE Course: propagate to all courses with the same course_code that are also OEs
-            // OEs are global (no branch-specific preference)
             const [relatedCourses] = await db.query(
                 'SELECT course_id FROM courses WHERE course_code = ? AND is_open_elective = 1 AND institute_id = ?',
                 [course.course_code, req.user.institute_id]
@@ -1115,7 +1135,7 @@ exports.deleteLabRoomPreference = async (req, res) => {
             const ids = relatedCourses.map(rc => rc.course_id);
             if (ids.length > 0) {
                 await db.query(
-                    'DELETE FROM lab_room_preference WHERE course_id IN (?) AND branch_id IS NULL AND institute_id = ?',
+                    'DELETE FROM lab_room_preference WHERE course_id IN (?) AND institute_id = ?',
                     [ids, req.user.institute_id]
                 );
             }
@@ -1123,12 +1143,12 @@ exports.deleteLabRoomPreference = async (req, res) => {
             const branchIdVal = branch_id || null;
             if (branchIdVal) {
                 await db.query(
-                    'DELETE FROM lab_room_preference WHERE course_id = ? AND branch_id = ? AND institute_id = ?',
+                    'DELETE FROM lab_room_preference WHERE course_id = ? AND (branch_id = ? OR branch_id IS NULL) AND institute_id = ?',
                     [course_id, branchIdVal, req.user.institute_id]
                 );
             } else {
                 await db.query(
-                    'DELETE FROM lab_room_preference WHERE course_id = ? AND branch_id IS NULL AND institute_id = ?',
+                    'DELETE FROM lab_room_preference WHERE course_id = ? AND institute_id = ?',
                     [course_id, req.user.institute_id]
                 );
             }

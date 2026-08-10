@@ -26,11 +26,13 @@ function Manage() {
             (course.programs && course.programs.includes(labFilterProgram));
 
         const matchesBranch = !labFilterBranch ||
-            course.branch_name === labFilterBranch;
+            course.branch_name === labFilterBranch ||
+            (course.branches && course.branches.includes(labFilterBranch));
 
         const representativeId = course.course_ids[0];
         const prefKey = course.branch_id ? `${representativeId}_${course.branch_id}` : String(representativeId);
-        const hasPref = !!labRoomPrefs[prefKey];
+        const prefRoomId = labRoomPrefs[prefKey] || labRoomPrefs[String(representativeId)] || '';
+        const hasPref = !!prefRoomId;
 
         const matchesPref = labFilterPref === 'ALL' ||
             (labFilterPref === 'HAS_PREF' && hasPref) ||
@@ -59,6 +61,40 @@ function Manage() {
     const [editId, setEditId] = useState(null);
     const navigate = useNavigate();
 
+    const columnLabelMap = {
+        'program_name': 'PROGRAM',
+        'branch_name': 'BRANCH',
+        'section_name': 'SECTION',
+        'course_name': 'COURSE',
+        'course_code': 'COURSE CODE',
+        'section_lab_group_type': 'LAB CONFIG',
+        'section_is_open_elective': 'IS OE?',
+        'section_open_elective_number': 'OE NUMBER',
+        'branch_lab_group_type': 'LAB CONFIG',
+        'branch_is_open_elective': 'IS OE?',
+        'branch_open_elective_number': 'OE NUMBER',
+        'semester_number': 'SEMESTER',
+        'theory_hours': 'THEORY',
+        'lab_hours': 'LAB',
+        'tutorial_hours': 'TUTORIAL',
+        'faculty_name': 'FACULTY',
+        'faculty_short': 'SHORT CODE',
+        'room_name': 'ROOM',
+        'room_type': 'ROOM TYPE',
+        'capacity': 'CAPACITY',
+        'subsection_capacity': 'CAPACITY',
+        'subsection_name': 'SUBSECTION',
+        'timeslot_id': 'SLOT ID',
+        'start_time': 'START TIME',
+        'end_time': 'END TIME',
+        'slot_order': 'ORDER',
+        'is_break': 'IS BREAK?',
+        'role': 'ROLE',
+        'email': 'EMAIL',
+        'user_id': 'USER ID',
+        'username': 'USERNAME'
+    };
+
     // groups related resources for the sidebar navigation
     const categories = {
         'ACADEMIC': { title: 'ACADEMIC STRUCTURE', resources: ['program', 'year', 'semester', 'branch'] },
@@ -81,7 +117,7 @@ function Manage() {
         'faculty': ['faculty_id', 'faculty_name', 'faculty_short', 'email'],
         'room': ['room_id', 'room_name', 'room_type', 'capacity'],
         'course': ['program_name', 'course_code', 'course_name', 'semester_number', 'theory_hours', 'lab_hours', 'tutorial_hours'],
-        'course-branch': ['program_name', 'branch_name', 'course_name', 'course_code', 'branch_lab_group_type'],
+        'course-branch': ['program_name', 'branch_name', 'section_name', 'course_name', 'course_code', 'section_lab_group_type', 'section_is_open_elective', 'section_open_elective_number'],
         'faculty-course': ['program_name', 'branch_name', 'section_name', 'course_code', 'faculty_name'],
         'timeslot': ['timeslot_id', 'day', 'start_time', 'end_time', 'slot_order', 'is_break'],
         'user': ['user_id', 'username', 'role', 'email']
@@ -90,11 +126,13 @@ function Manage() {
         if (activeCategory !== 'LAB_ROOMS') return;
         const fetchLabData = async () => {
             try {
-                const [prefsRes, coursesRes, roomsRes, branchCoursesRes] = await Promise.all([
+                const [prefsRes, coursesRes, roomsRes, branchCoursesRes, progRes, branchRes] = await Promise.all([
                     adminService.getLabRoomPreferences(),
                     adminService.getCourses(),
                     adminService.getRooms(),
-                    adminService.getBranchCourses()
+                    adminService.getBranchCourses(),
+                    adminService.getPrograms(),
+                    adminService.getBranches()
                 ]);
 
                 const prefsMap = {};
@@ -104,7 +142,6 @@ function Manage() {
                 });
                 setLabRoomPrefs(prefsMap);
 
-                // Group OE courses globally, but keep regular courses branch-specific
                 const rawCourses = (coursesRes.data || []).filter(c => Number(c.lab_hours) > 0);
                 const branchCourses = branchCoursesRes.data || [];
                 const groupedList = [];
@@ -115,6 +152,7 @@ function Manage() {
                         if (!addedOEs.has(c.course_code)) {
                             addedOEs.add(c.course_code);
                             const related = rawCourses.filter(rc => rc.course_code === c.course_code && rc.is_open_elective === 1);
+                            const allProgs = Array.from(new Set(related.map(rc => rc.program_name).filter(Boolean))).sort();
                             groupedList.push({
                                 course_code: c.course_code,
                                 course_name: c.course_name,
@@ -123,24 +161,29 @@ function Manage() {
                                 course_ids: related.map(rc => rc.course_id),
                                 branch_id: null,
                                 branch_name: null,
-                                programs: Array.from(new Set(related.map(rc => rc.program_name))).sort()
+                                programs: allProgs
                             });
                         }
                     } else {
-                        // Regular course: list per branch assignment
+                        // Regular course: list per branch assignment (deduplicated by branch)
                         const cbAssignments = branchCourses.filter(bc => bc.course_id === c.course_id);
                         if (cbAssignments.length > 0) {
+                            const seenBranch = new Set();
                             cbAssignments.forEach(cb => {
-                                groupedList.push({
-                                    course_code: c.course_code,
-                                    course_name: c.course_name,
-                                    lab_hours: c.lab_hours,
-                                    is_open_elective: 0,
-                                    course_ids: [c.course_id],
-                                    branch_id: cb.branch_id,
-                                    branch_name: cb.branch_name,
-                                    programs: [cb.program_name]
-                                });
+                                const bKey = cb.branch_id || cb.branch_name;
+                                if (!seenBranch.has(bKey)) {
+                                    seenBranch.add(bKey);
+                                    groupedList.push({
+                                        course_code: c.course_code,
+                                        course_name: c.course_name,
+                                        lab_hours: c.lab_hours,
+                                        is_open_elective: 0,
+                                        course_ids: [c.course_id],
+                                        branch_id: cb.branch_id,
+                                        branch_name: cb.branch_name,
+                                        programs: [cb.program_name]
+                                    });
+                                }
                             });
                         } else {
                             groupedList.push({
@@ -163,7 +206,12 @@ function Manage() {
                     return (a.branch_name || "").localeCompare(b.branch_name || "");
                 });
                 setLabCourses(groupedList);
-                setData(prev => ({ ...prev, room: roomsRes.data || [] }));
+                setData(prev => ({
+                    ...prev,
+                    room: roomsRes.data || [],
+                    program: progRes.data || [],
+                    branch: branchRes.data || []
+                }));
             } catch (e) {
                 console.error('Failed to fetch lab room data', e);
             }
@@ -265,7 +313,7 @@ function Manage() {
                     case 'course-branch':
                         await adminService.updateCourseBranch({
                             ...formData,
-                            old_branch_id: editId.branch_id,
+                            old_section_id: editId.section_id,
                             old_course_code: editId.course_code
                         });
                         break;
@@ -313,9 +361,12 @@ function Manage() {
                     case 'faculty-course': await adminService.assignFaculty(formData); break;
                     case 'course-branch':
                         await adminService.assignCourseBranch({
-                            branch_id: formData.branch_id,
+                            section_id: formData.section_id,
                             course_code: formData.course_code,
-                            course_capacity: parseInt(formData.course_capacity || 0)
+                            course_capacity: parseInt(formData.course_capacity || 0),
+                            section_lab_group_type: formData.section_lab_group_type || 'COMBINED',
+                            section_is_open_elective: formData.section_is_open_elective !== undefined && formData.section_is_open_elective !== null ? formData.section_is_open_elective : null,
+                            section_open_elective_number: formData.section_open_elective_number || null
                         });
                         break;
                     case 'course':
@@ -372,7 +423,7 @@ function Manage() {
             case 'user': id = item.user_id; break;
             case 'timeslot': id = item.timeslot_id; break;
             case 'course-branch':
-                id = { branch_id: item.branch_id, course_code: item.course_code };
+                id = { section_id: item.section_id, course_code: item.course_code };
                 break;
             case 'faculty-course':
                 id = {
@@ -411,8 +462,8 @@ function Manage() {
             case 'user': id = item.user_id; name = item.username; break;
             case 'timeslot': id = item.timeslot_id; name = `${item.day} (${item.start_time}-${item.end_time})`; break;
             case 'course-branch':
-                id = { branch_id: item.branch_id, course_code: item.course_code };
-                name = `${item.course_code} in ${item.branch_name}`;
+                id = { section_id: item.section_id, course_code: item.course_code };
+                name = `${item.course_code} in ${item.section_name}`;
                 break;
             case 'faculty-course':
                 id = {
@@ -466,7 +517,7 @@ function Manage() {
 
             const token = localStorage.getItem('token');
 
-            const res = await fetch('https://academicscheduler.onrender.com/api/admin/generate-master', {
+            const res = await fetch('http://localhost:5001/api/admin/generate-master', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -872,19 +923,6 @@ function Manage() {
                         <label>Name:</label> <input name="faculty_name" value={formData.faculty_name || ''} onChange={handleInputChange} required />
                         <label>Short Name:</label> <input name="faculty_short" value={formData.faculty_short || ''} onChange={handleInputChange} />
                         <label>Email:</label> <input name="email" type="email" value={formData.email || ''} onChange={handleInputChange} required />
-                        {!isEditing && (
-                            <>
-                                <label>Login Password:</label>
-                                <input
-                                    name="password"
-                                    type="password"
-                                    value={formData.password || ''}
-                                    onChange={handleInputChange}
-                                    required
-                                    placeholder="Set initial login password"
-                                />
-                            </>
-                        )}
                         {isEditing && (
                             <p style={{ fontSize: '0.78rem', color: '#64748b', margin: '4px 0 10px', fontStyle: 'italic' }}>
                                 ℹ️ To change this faculty member's login password, go to the <strong>Users</strong> tab.
@@ -1175,7 +1213,7 @@ function Manage() {
                             name="program_id"
                             value={formData.program_id || ''}
                             onChange={(e) => {
-                                setFormData(prev => ({ ...prev, program_id: e.target.value, branch_id: '' }));
+                                setFormData(prev => ({ ...prev, program_id: e.target.value, branch_id: '', semester_id: '', section_id: '' }));
                             }}
                             required
                             style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
@@ -1201,7 +1239,9 @@ function Manage() {
                         <select
                             name="branch_id"
                             value={formData.branch_id || ''}
-                            onChange={handleInputChange}
+                            onChange={(e) => {
+                                setFormData(prev => ({ ...prev, branch_id: e.target.value, semester_id: '', section_id: '' }));
+                            }}
                             required
                             style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
                             disabled={!formData.program_id}
@@ -1221,6 +1261,68 @@ function Manage() {
                             }
                         </select>
 
+                        <label>Filter Semester:</label>
+                        <input
+                            placeholder="Find semester..."
+                            value={modalSearch.semester || ""}
+                            style={{ width: '100%', padding: '8px', marginBottom: '10px', fontSize: '12px', border: '1px dashed #cbd5e1' }}
+                            onChange={(e) => setModalSearch(prev => ({ ...prev, semester: e.target.value }))}
+                        />
+                        <select
+                            name="semester_id"
+                            value={formData.semester_id || ''}
+                            onChange={(e) => {
+                                setFormData(prev => ({ ...prev, semester_id: e.target.value, section_id: '', course_code: '', course_id: '' }));
+                            }}
+                            required
+                            style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
+                            disabled={!formData.branch_id}
+                        >
+                            <option value="">Select Semester</option>
+                            {data.semester && data.semester
+                                .filter(sem => sem.program_id == formData.program_id)
+                                .filter(sem => {
+                                    const term = (modalSearch.semester || "").toLowerCase();
+                                    return !term || `Semester ${sem.semester_number}`.toLowerCase().includes(term);
+                                })
+                                .map(sem => (
+                                    <option key={sem.semester_id} value={sem.semester_id}>
+                                        Semester {sem.semester_number}
+                                    </option>
+                                ))
+                            }
+                        </select>
+
+                        <label>Filter Section:</label>
+                        <input
+                            placeholder="Find section..."
+                            value={modalSearch.section || ""}
+                            style={{ width: '100%', padding: '8px', marginBottom: '10px', fontSize: '12px', border: '1px dashed #cbd5e1' }}
+                            onChange={(e) => setModalSearch(prev => ({ ...prev, section: e.target.value }))}
+                        />
+                        <select
+                            name="section_id"
+                            value={formData.section_id || ''}
+                            onChange={handleInputChange}
+                            required
+                            style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
+                            disabled={!formData.semester_id}
+                        >
+                            <option value="">Select Section</option>
+                            {data.section && data.section
+                                .filter(s => s.branch_id == formData.branch_id && s.semester_id == formData.semester_id)
+                                .filter(s => {
+                                    const term = (modalSearch.section || "").toLowerCase();
+                                    return !term || (s.section_name || "").toLowerCase().includes(term);
+                                })
+                                .map(s => (
+                                    <option key={s.section_id} value={s.section_id}>
+                                        {s.section_name}
+                                    </option>
+                                ))
+                            }
+                        </select>
+
                         <label>Filter Course:</label>
                         <input
                             placeholder="Find course..."
@@ -1232,7 +1334,7 @@ function Manage() {
                             name="course_code"
                             value={formData.course_code || ''}
                             onChange={(e) => {
-                                const c = data.course.find(course => course.course_code === e.target.value && String(course.program_id) === String(formData.program_id));
+                                const c = data.course.find(course => course.course_code === e.target.value && String(course.program_id) === String(formData.program_id) && String(course.semester_id) === String(formData.semester_id));
                                 if (c) {
                                     setFormData(prev => ({ ...prev, course_code: c.course_code, course_id: c.course_id }));
                                 } else {
@@ -1241,12 +1343,13 @@ function Manage() {
                             }}
                             required
                             style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
+                            disabled={!formData.semester_id}
                         >
                             <option value="">Select Course</option>
                             {data.course && (() => {
                                 const uniqueMap = new Map();
                                 data.course.forEach(c => {
-                                    const key = `${c.program_id}-${c.course_code}`;
+                                    const key = `${c.program_id}-${c.semester_id}-${c.course_code}`;
                                     if (!uniqueMap.has(key)) {
                                         uniqueMap.set(key, c);
                                     }
@@ -1254,6 +1357,7 @@ function Manage() {
 
                                 const filteredCourses = Array.from(uniqueMap.values()).filter(c => {
                                     if (formData.program_id && String(c.program_id) !== String(formData.program_id)) return false;
+                                    if (formData.semester_id && String(c.semester_id) !== String(formData.semester_id)) return false;
 
                                     const term = (modalSearch.course || "").toLowerCase();
                                     if (!term) return true;
@@ -1263,13 +1367,13 @@ function Manage() {
 
                                 return filteredCourses.map((c, idx) => (
                                     <option key={`${c.course_id}-${idx}`} value={c.course_code}>
-                                        {c.course_name} ({c.course_code}) - {c.program_name || 'No Program'}
+                                        {c.course_name} ({c.course_code})
                                     </option>
                                 ));
                             })()}
                         </select>
 
-                        <label>Course Capacity for this Branch:</label>
+                        <label>Course Capacity for this Section:</label>
                         <input
                             name="course_capacity"
                             type="number"
@@ -1283,14 +1387,49 @@ function Manage() {
 
                         <label>Lab Group Type (If Lab Course):</label>
                         <select
-                            name="branch_lab_group_type"
-                            value={formData.branch_lab_group_type || 'COMBINED'}
+                            name="section_lab_group_type"
+                            value={formData.section_lab_group_type || 'COMBINED'}
                             onChange={handleInputChange}
                             style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
                         >
-                            <option value="COMBINED">COMBINED (Full branch in same room)</option>
-                            <option value="SPLIT">SPLIT (ECE-A1, ECE-A2 in separate blocks)</option>
+                            <option value="COMBINED">COMBINED (Full section in same room)</option>
+                            <option value="SPLIT">SPLIT (A1, A2 in separate blocks)</option>
                         </select>
+
+                        <label>Is Open Elective for this Section?</label>
+                        <select
+                            name="section_is_open_elective"
+                            value={formData.section_is_open_elective !== undefined && formData.section_is_open_elective !== null ? formData.section_is_open_elective : ''}
+                            onChange={(e) => {
+                                const val = e.target.value;
+                                setFormData(prev => ({
+                                    ...prev,
+                                    section_is_open_elective: val === '' ? null : Number(val)
+                                }));
+                            }}
+                            style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
+                        >
+                            <option value="">Default (Inherit from Course)</option>
+                            <option value="1">Yes</option>
+                            <option value="0">No</option>
+                        </select>
+
+                        <label>Open Elective Number for this Section (Optional override):</label>
+                        <input
+                            name="section_open_elective_number"
+                            type="number"
+                            min="1"
+                            placeholder="E.g., 8 (Leave empty to inherit from Course)"
+                            value={formData.section_open_elective_number || ''}
+                            onChange={(e) => {
+                                const val = e.target.value;
+                                setFormData(prev => ({
+                                    ...prev,
+                                    section_open_elective_number: val === '' ? null : Number(val)
+                                }));
+                            }}
+                            style={{ width: '100%', padding: '8px', marginBottom: '10px' }}
+                        />
                     </>
                 ); break;
             case 'course':
@@ -1597,7 +1736,6 @@ function Manage() {
                     ))}
                 </div>
 
-                {/* Lab Room Preferences — custom UI */}
                 {activeCategory === 'LAB_ROOMS' && (
                     <div style={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '32px', padding: '35px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05)' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
@@ -1647,13 +1785,16 @@ function Manage() {
 
                                     <select
                                         value={labFilterProgram}
-                                        onChange={(e) => setLabFilterProgram(e.target.value)}
+                                        onChange={(e) => {
+                                            setLabFilterProgram(e.target.value);
+                                            setLabFilterBranch('');
+                                        }}
                                         style={{ padding: '12px 20px', borderRadius: '14px', border: '1px solid #cbd5e1', fontSize: '0.85rem', color: '#0f172a', background: '#ffffff', outline: 'none', cursor: 'pointer', transition: '0.3s' }}
                                         onFocus={(e) => e.target.style.borderColor = '#2563eb'}
                                         onBlur={(e) => e.target.style.borderColor = '#cbd5e1'}
                                     >
                                         <option value="">All Programs</option>
-                                        {Array.from(new Set(data.program.map(p => p.program_name))).sort().map(prog => (
+                                        {Array.from(new Set((data.program || []).map(p => p.program_name).filter(Boolean))).sort().map(prog => (
                                             <option key={prog} value={prog}>{prog}</option>
                                         ))}
                                     </select>
@@ -1666,7 +1807,16 @@ function Manage() {
                                         onBlur={(e) => e.target.style.borderColor = '#cbd5e1'}
                                     >
                                         <option value="">All Branches</option>
-                                        {Array.from(new Set(data.branch.map(b => b.branch_name))).sort().map(br => (
+                                        {Array.from(new Set(
+                                            (data.branch || [])
+                                                .filter(b => {
+                                                    if (!labFilterProgram) return true;
+                                                    const p = (data.program || []).find(prog => prog.program_name === labFilterProgram);
+                                                    return p ? Number(b.program_id) === Number(p.program_id) : true;
+                                                })
+                                                .map(b => b.branch_name)
+                                                .filter(Boolean)
+                                        )).sort().map(br => (
                                             <option key={br} value={br}>{br}</option>
                                         ))}
                                     </select>
@@ -1800,8 +1950,10 @@ function Manage() {
                                                                             setLabRoomPrefs(prev => {
                                                                                 const updated = { ...prev };
                                                                                 course.course_ids.forEach(id => {
-                                                                                    const k = course.branch_id ? `${id}_${course.branch_id}` : String(id);
-                                                                                    delete updated[k];
+                                                                                    delete updated[String(id)];
+                                                                                    if (course.branch_id) {
+                                                                                        delete updated[`${id}_${course.branch_id}`];
+                                                                                    }
                                                                                 });
                                                                                 return updated;
                                                                             });
@@ -1829,13 +1981,12 @@ function Manage() {
                     </div>
                 )}
 
-                {/* the actual data tables for each resource */}
                 {activeCategory !== 'LAB_ROOMS' && categories[activeCategory].resources.map(resourceType => {
                     const columns = resourceColumns[resourceType] || [];
                     const rawRows = data[resourceType] || [];
                     const term = (searchTerms[resourceType] || "").toLowerCase();
 
-                    // handles switching between programs for course-specific views
+                    // Handles switching between programs for course-specific views
                     let filteredRows = rawRows;
                     if (resourceType === 'course' && activeProgramTab !== 'all') {
                         filteredRows = rawRows.filter(r => r.program_id == activeProgramTab);
@@ -1875,10 +2026,12 @@ function Manage() {
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px' }}>
                                 <h3 style={{ textTransform: 'uppercase', fontSize: '1.4rem', fontWeight: '900', color: '#2563eb', margin: 0, letterSpacing: '1px' }}>
                                     {resourceType === 'course-branch'
-                                        ? 'Course Branch Assignment (Lab Split/Combined Config)'
+                                        ? 'Course Section Assignment (Lab Split/Combined Config)'
                                         : resourceType === 'faculty-course'
                                             ? 'Faculty Course Allocation'
-                                            : resourceType.replace('-', ' ') + 's'}
+                                            : resourceType === 'faculty'
+                                                ? 'faculties'
+                                                : resourceType.replace('-', ' ') + 's'}
                                 </h3>
 
                                 <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
@@ -1888,7 +2041,9 @@ function Manage() {
                                                 ? 'Quick find assignments...'
                                                 : resourceType === 'faculty-course'
                                                     ? 'Quick find allocations...'
-                                                    : `Quick find ${resourceType}s...`}
+                                                    : resourceType === 'faculty'
+                                                        ? 'Quick find faculties...'
+                                                        : `Quick find ${resourceType}s...`}
                                             style={{ backgroundColor: '#f1f5f9', border: '1px solid #e2e8f0', padding: '12px 20px', borderRadius: '14px', color: '#0f172a', minWidth: '300px', fontSize: '14px', outline: 'none', transition: '0.3s' }}
                                             onChange={(e) => setSearchTerms({ ...searchTerms, [resourceType]: e.target.value })}
                                             onFocus={(e) => e.target.style.borderColor = '#2563eb'}
@@ -1910,7 +2065,7 @@ function Manage() {
                                         <tr>
                                             {columns.map(col => (
                                                 <th key={col} style={{ padding: '0 15px 15px 15px', color: '#64748b', fontSize: '0.75rem', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                                                    {col.replace('_', ' ')}
+                                                    {columnLabelMap[col] || col.replace('_', ' ')}
                                                 </th>
                                             ))}
                                             <th style={{ padding: '0 15px 15px 15px', color: '#64748b', fontSize: '0.75rem', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '1px', textAlign: 'right' }}>
@@ -1923,7 +2078,10 @@ function Manage() {
                                             <tr key={idx} style={{ transition: '0.2s', backgroundColor: idx % 2 === 0 ? '#f8fafc' : 'white' }}>
                                                 {columns.map(col => (
                                                     <td key={col} style={{ padding: '20px 15px', fontSize: '0.9rem', color: '#334155', borderTop: '1px solid #f1f5f9', borderBottom: '1px solid #f1f5f9', wordBreak: 'break-all' }}>
-                                                        {col === 'is_break' ? (row[col] ? 'Yes' : 'No') : row[col]}
+                                                        {col === 'is_break' ? (row[col] ? 'Yes' : 'No') :
+                                                            col === 'section_is_open_elective' ? (row[col] === null || row[col] === undefined ? 'Inherit' : row[col] === 1 ? 'Yes' : 'No') :
+                                                                col === 'section_open_elective_number' ? (row[col] === null || row[col] === undefined ? 'Inherit' : row[col]) :
+                                                                    row[col]}
                                                     </td>
                                                 ))}
                                                 <td style={{ padding: '20px 15px', borderTop: '1px solid #f1f5f9', borderBottom: '1px solid #f1f5f9', textAlign: 'right' }}>

@@ -63,7 +63,7 @@ function RegisterInstitute() {
             <h2><center>Register Institute</center></h2>
             {error && <p className="error" style={{ color: 'red', backgroundColor: '#fee2e2', padding: '10px', borderRadius: '4px', textAlign: 'center', fontWeight: 'bold' }}>{error}</p>}
             {message && <p className="success" style={{ color: 'green', backgroundColor: '#e6ffe6', padding: '10px', borderRadius: '4px', textAlign: 'center', fontWeight: 'bold' }}>{message}</p>}
-            
+
             <form onSubmit={handleSubmit}>
                 <div>
                     <label>Institute Name:</label>

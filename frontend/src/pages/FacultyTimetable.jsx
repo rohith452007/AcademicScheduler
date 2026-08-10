@@ -12,7 +12,7 @@ const SEM_COLORS = [
     { header: '#f3e8ff', text: '#6b21a8', border: '#8b5cf6' },
 ];
 
-const DAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"];
+const DAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"];
 const isBreak = (s) => s && (s.is_break === 1 || s.is_break === true || s.is_break === "1");
 
 export default function FacultyTimetable() {
@@ -34,8 +34,8 @@ export default function FacultyTimetable() {
     const [searchTerm, setSearchTerm] = useState("");
 
     const filteredFaculty = [...allFaculty]
-        .filter(f => 
-            f.faculty_short.toLowerCase().includes(searchTerm.toLowerCase()) || 
+        .filter(f =>
+            f.faculty_short.toLowerCase().includes(searchTerm.toLowerCase()) ||
             f.faculty_name.toLowerCase().includes(searchTerm.toLowerCase())
         )
         .sort((a, b) => a.faculty_short.localeCompare(b.faculty_short));
@@ -95,64 +95,73 @@ export default function FacultyTimetable() {
                 const slot = daySlots[i];
 
                 if (showMaster && electiveSlotIds.includes(slot.timeslot_id)) {
-                    let span = 1;
-                    const getOesForSlot = (sId) => {
+                    const getOesForSectionAndSlot = (secId, sId) => {
                         return [...new Map(
                             semEntries
-                                .filter(e => e.timeslot_id === sId && e.is_open_elective === 1)
+                                .filter(e => e.timeslot_id === sId && e.section_id === secId && e.is_open_elective === 1)
                                 .map(e => [e.course_code + e.room_id + e.component_type, e])
                         ).values()];
                     };
 
-                    const oes = getOesForSlot(slot.timeslot_id);
-                    const isLabSlot = oes.some(el => el.component_type === "LAB");
+                    const getOeKeyForSection = (secId, sId) => {
+                        const list = getOesForSectionAndSlot(secId, sId);
+                        return list.map(e => e.course_code).sort().join(',');
+                    };
 
-                    if (isLabSlot) {
-                        while (true) {
-                            const nxt = daySlots[i + span];
-                            if (!nxt || isBreak(nxt)) break;
-                            if (!electiveSlotIds.includes(nxt.timeslot_id)) break;
-                            
-                            const nxtOes = getOesForSlot(nxt.timeslot_id);
-                            
-                            if (nxtOes.length !== oes.length) break;
-                            const sameSet = oes.every(el => 
-                                nxtOes.some(nxtEl => 
-                                    nxtEl.course_code === el.course_code && 
-                                    nxtEl.room_id === el.room_id && 
-                                    nxtEl.component_type === el.component_type
-                                )
-                            );
-                            if (!sameSet) break;
-                            
-                            span++;
+                    const thisOeKey = getOeKeyForSection(secObj.section_id, slot.timeslot_id);
+                    const isThisSectionInOe = thisOeKey !== '';
+
+                    if (isThisSectionInOe) {
+                        let span = 1;
+                        const sectionOes = getOesForSectionAndSlot(secObj.section_id, slot.timeslot_id);
+                        const isLabSlot = sectionOes.some(el => el.component_type === "LAB");
+
+                        if (isLabSlot) {
+                            while (true) {
+                                const nxt = daySlots[i + span];
+                                if (!nxt || isBreak(nxt)) break;
+                                const nxtOeKey = getOeKeyForSection(secObj.section_id, nxt.timeslot_id);
+                                if (nxtOeKey !== thisOeKey) break;
+                                span++;
+                            }
                         }
-                    }
 
-                    if (sections.indexOf(secObj) === 0) {
-                        const oeNum = oes[0]?.open_elective_number || "";
-                        cells.push(
-                            <td key={`oe-${i}`} rowSpan={sections.length} colSpan={span}
-                                className="p-4 bg-gray-50 text-center relative group align-middle"
-                                style={{ border: `1px solid ${theme.border}` }}>
-                                <div className="flex flex-col items-center justify-center gap-1">
-                                    <div className="text-gray-900 text-[14px] font-black uppercase mb-2 tracking-widest">
-                                        {oeNum ? `OE-${oeNum}` : "OE"}{isLabSlot ? " LAB" : ""}
-                                    </div>
-                                    {oes.map((el, idx) => (
-                                        <div key={idx} className="text-[12px] text-gray-900 font-bold leading-tight py-1">
-                                            {el.course_code}-{el.faculty_short}-{el.room_name}
-                                            {el.component_type === "TUTORIAL" ? " (Tut.)" : ""}
+                        const secIndex = sections.indexOf(secObj);
+                        const isStartOfBlock = secIndex === 0 || getOeKeyForSection(sections[secIndex - 1].section_id, slot.timeslot_id) !== thisOeKey;
+
+                        if (isStartOfBlock) {
+                            let rowSpanCount = 1;
+                            while (
+                                secIndex + rowSpanCount < sections.length &&
+                                getOeKeyForSection(sections[secIndex + rowSpanCount].section_id, slot.timeslot_id) === thisOeKey
+                            ) {
+                                rowSpanCount++;
+                            }
+
+                            const oeNum = sectionOes[0]?.open_elective_number || "";
+                            cells.push(
+                                <td key={`oe-${i}`} rowSpan={rowSpanCount} colSpan={span}
+                                    className="p-4 bg-gray-50 text-center relative group align-middle"
+                                    style={{ border: `1px solid ${theme.border}` }}>
+                                    <div className="flex flex-col items-center justify-center gap-1">
+                                        <div className="text-gray-900 text-[14px] font-black uppercase mb-2 tracking-widest">
+                                            {oeNum ? `OE-${oeNum}` : "OE"}{isLabSlot ? " LAB" : ""}
                                         </div>
-                                    ))}
-                                </div>
-                            </td>
-                        );
-                    } else { 
-                        cells.push(null); 
+                                        {sectionOes.map((el, idx) => (
+                                            <div key={idx} className="text-[12px] text-gray-900 font-bold leading-tight py-1">
+                                                {el.course_code}-{el.faculty_short}-{el.room_name}
+                                                {el.component_type === "TUTORIAL" ? " (Tut.)" : ""}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </td>
+                            );
+                        } else {
+                            cells.push(null);
+                        }
+                        i += span - 1;
+                        continue;
                     }
-                    i += span - 1;
-                    continue;
                 }
 
                 if (isBreak(slot)) {
@@ -219,8 +228,8 @@ export default function FacultyTimetable() {
 
     return (
         <div className="bg-[#f8fafc] min-h-screen text-gray-900 font-sans antialiased">
-        
-            <header 
+
+            <header
                 style={{ height: "80px", zIndex: 1000, display: "flex", alignItems: "center", padding: "0 32px", backgroundColor: "#ffffff", borderBottom: "2px solid #f3f4f6" }}
             >
                 <div style={{ flex: 1, display: "flex", justifyContent: "flex-start" }}>
@@ -230,8 +239,8 @@ export default function FacultyTimetable() {
                         ← Back
                     </button>
                 </div>
- 
-                <h1 
+
+                <h1
                     style={{ flex: 1, textAlign: "center", margin: 0, fontSize: "24px", fontWeight: "900", color: "#111827", textTransform: "uppercase", letterSpacing: "0.1em" }}
                 >
                     Faculty View
@@ -249,12 +258,12 @@ export default function FacultyTimetable() {
 
             <main style={{ padding: "40px 32px" }}>
                 <div style={{ maxWidth: "1700px", margin: "0 auto 48px auto" }}>
-                    
+
                     <div style={{ display: "flex", justifyContent: "center", marginBottom: "32px" }}>
                         <div style={{ backgroundColor: "#f3f4f6", padding: "6px", borderRadius: "16px", display: "flex", alignItems: "center", gap: "8px", border: "1px solid #e5e7eb" }}>
-                            <button 
+                            <button
                                 onClick={() => { setShowMaster(true); setSelectedFaculty(""); }}
-                                style={{ 
+                                style={{
                                     padding: "12px 32px", borderRadius: "12px", fontWeight: "900", fontSize: "14px", textTransform: "uppercase", letterSpacing: "0.05em", transition: "all 0.2s",
                                     backgroundColor: showMaster ? "#ffffff" : "transparent",
                                     color: showMaster ? "#2563eb" : "#6b7280",
@@ -264,9 +273,9 @@ export default function FacultyTimetable() {
                             >
                                 🌐 Master View
                             </button>
-                            <button 
+                            <button
                                 onClick={() => setShowMaster(false)}
-                                style={{ 
+                                style={{
                                     padding: "12px 32px", borderRadius: "12px", fontWeight: "900", fontSize: "14px", textTransform: "uppercase", letterSpacing: "0.05em", transition: "all 0.2s",
                                     backgroundColor: !showMaster ? "#ffffff" : "transparent",
                                     color: !showMaster ? "#2563eb" : "#6b7280",
@@ -283,29 +292,29 @@ export default function FacultyTimetable() {
                     {!showMaster && (
                         <div style={{ backgroundColor: "#ffffff", padding: "32px", borderRadius: "24px", boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.1)", border: "1px solid #f3f4f6", textAlign: "center" }}>
                             <label style={{ display: "block", fontSize: "12px", fontWeight: "900", color: "#3b82f6", textTransform: "uppercase", letterSpacing: "0.2em", marginBottom: "20px" }}>Find Your Name</label>
-                            
+
                             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
                                 {/* Search Bar */}
                                 <div style={{ position: "relative", width: "100%", maxWidth: "400px" }}>
                                     <span style={{ position: "absolute", left: "16px", top: "50%", transform: "translateY(-50%)", opacity: 0.4 }}>🔍</span>
-                                    <input 
+                                    <input
                                         type="text"
                                         placeholder="Search by name or short code..."
                                         value={searchTerm}
                                         onChange={(e) => setSearchTerm(e.target.value)}
-                                        style={{ 
-                                            width: "100%", padding: "12px 20px 12px 44px", borderRadius: "16px", border: "2px solid #f3f4f6", 
+                                        style={{
+                                            width: "100%", padding: "12px 20px 12px 44px", borderRadius: "16px", border: "2px solid #f3f4f6",
                                             fontWeight: "600", color: "#374151", backgroundColor: "#ffffff", outline: "none", transition: "all 0.2s"
                                         }}
                                     />
                                 </div>
 
                                 {/* Dropdown */}
-                                <select 
+                                <select
                                     value={selectedFaculty}
                                     onChange={(e) => setSelectedFaculty(e.target.value)}
-                                    style={{ 
-                                        width: "100%", maxWidth: "400px", padding: "12px 20px", borderRadius: "16px", border: "2px solid #3b82f6", 
+                                    style={{
+                                        width: "100%", maxWidth: "400px", padding: "12px 20px", borderRadius: "16px", border: "2px solid #3b82f6",
                                         fontWeight: "700", color: "#111827", backgroundColor: "#f9fafb", cursor: "pointer", outline: "none"
                                     }}
                                 >
@@ -351,9 +360,10 @@ export default function FacultyTimetable() {
                     <div ref={timetableRef} className="space-y-20 max-w-[1700px] mx-auto">
                         {DAYS.map(day => {
                             const daySlots = allTimeSlots.filter(s => s.day === day).sort((a, b) => a.slot_order - b.slot_order);
+                            if (!daySlots.length) return null;
                             const dayEntries = timetableData.filter(e => e.day === day);
                             const semesters = [...allSemesters].sort((a, b) => a.semester_number - b.semester_number);
-                            
+
                             const hasClassesThisDay = !selectedFaculty || dayEntries.some(e => String(e.faculty_id) === String(selectedFaculty));
                             if (!hasClassesThisDay) return null;
 
@@ -366,11 +376,14 @@ export default function FacultyTimetable() {
                                         const semId = semObj.semester_id;
                                         const progName = allPrograms.find(p => p.program_id === semObj.program_id)?.program_name || "";
                                         const theme = SEM_COLORS[semIdx % SEM_COLORS.length];
-                                        const semEntries = dayEntries.filter(e => e.semester_number === semObj.semester_number);
+                                        const semEntries = dayEntries.filter(e =>
+                                            e.semester_number === semObj.semester_number &&
+                                            Number(e.program_id) === Number(semObj.program_id)
+                                        );
                                         const sections = allSections
                                             .filter(s => s.semester_id === semId)
                                             .sort((a, b) => a.section_name.localeCompare(b.section_name));
-                                        
+
                                         const electiveSlotIds = [...new Set(
                                             semEntries.filter(e => e.is_open_elective === 1).map(e => e.timeslot_id)
                                         )];
@@ -394,7 +407,7 @@ export default function FacultyTimetable() {
                                                                 <th className="p-3 w-32 font-bold uppercase text-gray-700 text-[11px]" style={{ border: `1px solid ${theme.border}` }}>Section</th>
                                                                 {daySlots.map((sl, si) => (
                                                                     <th key={si} className="p-3 w-36 font-bold text-gray-700 text-[11px]" style={{ border: `1px solid ${theme.border}` }}>
-                                                                        {isBreak(sl) ? "BREAK" : `${sl.start_time.slice(0,5)} - ${sl.end_time.slice(0,5)}`}
+                                                                        {isBreak(sl) ? "BREAK" : `${sl.start_time.slice(0, 5)} - ${sl.end_time.slice(0, 5)}`}
                                                                     </th>
                                                                 ))}
                                                             </tr>

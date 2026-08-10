@@ -5,7 +5,7 @@ function FacultyManage() {
     const navigate = useNavigate();
 
     const handleLogout = () => {
-        // wipe the login session
+        // Wipe the login session
         localStorage.removeItem('token');
         localStorage.removeItem('userRole');
         navigate('/login');

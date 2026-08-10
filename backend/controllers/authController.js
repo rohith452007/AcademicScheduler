@@ -33,8 +33,21 @@ exports.login = async (req, res) => {
         }
 
         const user = rows[0];
+        const bcrypt = require('bcryptjs');
+        let isMatch = false;
+        try {
+            if (user.password && (user.password.startsWith('$2a$') || user.password.startsWith('$2b$') || user.password.startsWith('$2y$'))) {
+                isMatch = bcrypt.compareSync(password, user.password);
+            }
+        } catch (err) {
+            console.error("Bcrypt comparison failed:", err);
+        }
 
-        if (password !== user.password) {
+        if (!isMatch) {
+            isMatch = (password === user.password);
+        }
+
+        if (!isMatch) {
             return res.status(401).json({
                 success: false,
                 message: "Invalid credentials"
@@ -157,10 +170,12 @@ exports.resetPassword = async (req, res) => {
         }
 
         const user = rows[0];
+        const bcrypt = require('bcryptjs');
+        const hashedPassword = bcrypt.hashSync(password, 10);
 
         await db.query(
             'UPDATE users SET password = ?, reset_token = NULL, reset_token_expires = NULL WHERE user_id = ?',
-            [password, user.user_id]
+            [hashedPassword, user.user_id]
         );
 
         res.status(200).json({
@@ -262,10 +277,13 @@ exports.registerInstitute = async (req, res) => {
         );
         const newInstId = instResult.insertId;
 
+        const bcrypt = require('bcryptjs');
+        const hashedPassword = bcrypt.hashSync(password, 10);
+
         // 4. Create the Admin User
         await conn.query(
             'INSERT INTO users (username, password, role, email, institute_id) VALUES (?, ?, ?, ?, ?)',
-            [username, password, 'admin', email, newInstId]
+            [username, hashedPassword, 'admin', email, newInstId]
         );
 
         await conn.commit();
