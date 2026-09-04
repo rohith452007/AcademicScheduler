@@ -203,22 +203,28 @@ async function validate(conn, {
     if (rClash) return { ok: false, error: 'Room clash' };
 
     if (!subsection_id) {
+        // Section-level entry: block if the slot already has ANY entry for this section
+        // (section-level or subsection-level — can't add a section-wide class when subsections are active)
         const [[sc]] = await conn.query(
             `SELECT 1 FROM master_timetable
              WHERE section_id=? AND timeslot_id=? AND institute_id=?${excl}`,
             [section_id, timeslot_id, institute_id, ...ep]);
         if (sc) return { ok: false, error: 'Section already busy in this slot' };
     } else {
-        const [[otherC]] = await conn.query(
+        // Subsection-level entry:
+        // Rule A: Block if the section has a SECTION-LEVEL (non-subsection) entry in this slot
+        const [[secLevelEntry]] = await conn.query(
             `SELECT 1 FROM master_timetable
-             WHERE section_id=? AND timeslot_id=? AND course_code != ? AND institute_id=?${excl}`,
-            [section_id, timeslot_id, course_code, institute_id, ...ep]);
-        if (otherC) return { ok: false, error: 'Another course is already booked for this section in this slot' };
+             WHERE section_id=? AND timeslot_id=? AND subsection_id IS NULL AND institute_id=?${excl}`,
+            [section_id, timeslot_id, institute_id, ...ep]);
+        if (secLevelEntry) return { ok: false, error: 'This section has a section-wide class in this slot. Cannot add a subsection here.' };
 
+        // Rule B: Block if this EXACT subsection is already busy in this slot
+        // (different subsections of the same section are allowed to share a slot)
         const [[subC]] = await conn.query(
             `SELECT 1 FROM master_timetable WHERE subsection_id=? AND timeslot_id=? AND institute_id=?${excl}`,
             [subsection_id, timeslot_id, institute_id, ...ep]);
-        if (subC) return { ok: false, error: 'Subsection already busy in this slot' };
+        if (subC) return { ok: false, error: 'This subsection is already busy in this slot.' };
     }
 
     return { ok: true, day: tsRow.day };
@@ -1355,12 +1361,20 @@ exports.addManualEntry = async (req, res) => {
         if (component_type === 'THEORY' || component_type === 'TUTORIAL') {
             // Check if the section is already in a class
             for (const tSec of targetSections) {
-                const [existingClasses] = await conn.query(`
+                const [allExistingClasses] = await conn.query(`
                     SELECT m.*, c.is_open_elective, c.open_elective_number 
                     FROM ${tbl(req)} m
                     JOIN courses c ON (m.course_id = c.course_id OR (m.course_id IS NULL AND m.course_code = c.course_code AND m.program_id = c.program_id)) AND c.institute_id = m.institute_id
                     WHERE m.section_id = ? AND m.timeslot_id = ? AND m.institute_id = ?`,
                     [tSec.section_id, timeslot_id, req.user.institute_id]);
+
+                // If adding a subsection entry, only conflict on:
+                // (a) section-level entries (subsection_id IS NULL), or
+                // (b) entries for this exact subsection.
+                // A different subsection in the same slot is allowed.
+                const existingClasses = subsection_id
+                    ? allExistingClasses.filter(e => e.subsection_id == null || Number(e.subsection_id) === Number(subsection_id))
+                    : allExistingClasses;
 
                 if (existingClasses.length > 0) {
                     const newCourseOENum = getOENumberForSection(courseInfo, tSec.section_id, courseSections);
@@ -1499,12 +1513,20 @@ exports.addManualEntry = async (req, res) => {
             // Check if the section is free for the entire lab window
             for (const slot of labBlock) {
                 for (const tSec of targetSections) {
-                    const [existingClasses] = await conn.query(`
+                    const [allExistingClasses] = await conn.query(`
                         SELECT m.*, c.is_open_elective, c.open_elective_number 
                         FROM ${tbl(req)} m
                         JOIN courses c ON (m.course_id = c.course_id OR (m.course_id IS NULL AND m.course_code = c.course_code AND m.program_id = c.program_id)) AND c.institute_id = m.institute_id
                         WHERE m.section_id = ? AND m.timeslot_id = ? AND m.institute_id = ?`,
                         [tSec.section_id, slot.timeslot_id, req.user.institute_id]);
+
+                    // If adding a subsection lab, only conflict on:
+                    // (a) section-level entries (subsection_id IS NULL), or
+                    // (b) entries for this exact subsection.
+                    // A different subsection in the same slot is allowed.
+                    const existingClasses = subsection_id
+                        ? allExistingClasses.filter(e => e.subsection_id == null || Number(e.subsection_id) === Number(subsection_id))
+                        : allExistingClasses;
 
                     if (existingClasses.length > 0) {
                         const newCourseOENum = getOENumberForSection(courseInfo, tSec.section_id, courseSections);

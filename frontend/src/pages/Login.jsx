@@ -14,7 +14,6 @@ function Login() {
         setLoading(true);
         setError('');
         try {
-            await new Promise(resolve => setTimeout(resolve, 2000));
             const data = await authService.login({ username, password });
             if (data.token) {
                 localStorage.setItem('token', data.token); // Store token
@@ -28,7 +27,7 @@ function Login() {
                 } else if (data.user.role === 'student') {
                     navigate('/student-manage');
                 } else {
-                    navigate('/student-manage'); // Default fallback
+                    navigate('/student-manage');
                 }
             } else {
                 setError('Login failed: No token received');

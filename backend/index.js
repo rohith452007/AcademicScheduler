@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const authRoutes = require('./routes/authRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+const examRoutes = require('./routes/examRoutes');
 const authMiddleware = require('./middleware/auth');
 const db = require('./config/db');
 
@@ -49,6 +50,7 @@ app.use((req, res, next) => {
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', authMiddleware, adminRoutes);
+app.use('/api/exam', authMiddleware, examRoutes);
 
 app.get('/', (req, res) => {
     res.send('Timetable Generator API is running...');

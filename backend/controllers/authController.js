@@ -35,15 +35,14 @@ exports.login = async (req, res) => {
         const user = rows[0];
         const bcrypt = require('bcryptjs');
         let isMatch = false;
-        try {
-            if (user.password && (user.password.startsWith('$2a$') || user.password.startsWith('$2b$') || user.password.startsWith('$2y$'))) {
+        const isBcrypt = user.password && (user.password.startsWith('$2a$') || user.password.startsWith('$2b$') || user.password.startsWith('$2y$'));
+        if (isBcrypt) {
+            try {
                 isMatch = bcrypt.compareSync(password, user.password);
+            } catch (err) {
+                console.error("Bcrypt comparison failed:", err);
             }
-        } catch (err) {
-            console.error("Bcrypt comparison failed:", err);
-        }
-
-        if (!isMatch) {
+        } else {
             isMatch = (password === user.password);
         }
 

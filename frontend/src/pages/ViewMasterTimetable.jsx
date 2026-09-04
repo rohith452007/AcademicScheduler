@@ -304,9 +304,10 @@ export default function ViewMasterTimetable() {
                 setLoading(false);
             }
         }
-        // navigate(-1) always returns to wherever the user came from —
-        // faculty → /faculty-manage, student → /student-manage, admin → /manage
-        navigate(-1);
+        const role = localStorage.getItem('userRole');
+        if (role === 'student') navigate('/student-manage');
+        else if (role === 'faculty') navigate('/faculty-manage');
+        else navigate('/manage', { state: null });
     };
 
     // build all the table rows for a specific section
@@ -316,11 +317,13 @@ export default function ViewMasterTimetable() {
             const cells = [];
             for (let i = 0; i < daySlots.length; i++) {
                 const slot = daySlots[i];
-                const entry = semEntries.find(e =>
+                // Collect ALL non-OE entries for this section+slot
+                const slotEntries = semEntries.filter(e =>
                     e.section_name === secName &&
                     e.timeslot_id === slot.timeslot_id &&
                     e.is_open_elective !== 1
                 );
+                const entry = slotEntries[0]; // first entry — used for span/type checks
 
                 const isSemesterOeSlot = semEntries.some(e => e.timeslot_id === slot.timeslot_id && e.is_open_elective === 1);
                 if (isSemesterOeSlot) {
@@ -430,10 +433,10 @@ export default function ViewMasterTimetable() {
                     continue;
                 }
 
-                // lab spanning
+                // lab spanning — supports multiple co-scheduled subsection labs in same slot
                 if (entry && entry.component_type === "LAB") {
+                    // Determine span from the first lab entry
                     let span = 1;
-                    const labMasterIds = [entry.master_id];
                     while (true) {
                         const nxt = daySlots[i + span];
                         if (!nxt || isBreak(nxt)) break;
@@ -443,22 +446,48 @@ export default function ViewMasterTimetable() {
                             e.subsection_id === entry.subsection_id
                         );
                         if (!nxtE) break;
-                        labMasterIds.push(nxtE.master_id);
                         span++;
                     }
+
+                    // Collect all lab entries across all span slots for each co-scheduled subsection
+                    const labSlotEntries = slotEntries.filter(e => e.component_type === "LAB");
+
                     cells.push(
                         <td key={`lab-${i}`} colSpan={span}
                             className="p-2 bg-green-50 text-green-700 font-semibold text-[11px] text-center relative group"
                             style={{ border: `1px solid ${theme.border}` }}>
-                            <div className="whitespace-nowrap overflow-hidden">
-                                {entry.course_code}-{entry.subsection_name || secName}-{entry.faculty_short}-{entry.room_name}
+                            <div className="flex flex-col gap-1 items-center justify-center">
+                                {labSlotEntries.map((labE, idx) => {
+                                    // Collect master_ids for this subsection across all span slots
+                                    const labMasterIds = [];
+                                    for (let sIdx = 0; sIdx < span; sIdx++) {
+                                        const nxtSlot = daySlots[i + sIdx];
+                                        if (!nxtSlot) break;
+                                        semEntries
+                                            .filter(e => e.section_name === secName && e.timeslot_id === nxtSlot.timeslot_id &&
+                                                e.course_code === labE.course_code && e.subsection_id === labE.subsection_id)
+                                            .forEach(e => labMasterIds.push(e.master_id));
+                                    }
+                                    return (
+                                        <div key={idx} className={`relative group/lab flex items-center gap-1 ${idx > 0 ? 'border-t border-green-200 pt-1 w-full justify-center' : ''}`}>
+                                            <span className="whitespace-nowrap overflow-hidden">
+                                                {labE.course_code}-{labE.subsection_name || secName}-{labE.faculty_short}-{labE.room_name}
+                                            </span>
+                                            {editMode && (
+                                                <button onClick={(e) => confirmDelete(e, labMasterIds, `${labE.course_code} LAB`)}
+                                                    title="Delete"
+                                                    className="w-4 h-4 rounded bg-red-100 hover:bg-red-500 text-red-600 hover:text-white text-[9px] flex items-center justify-center opacity-0 group-hover/lab:opacity-100 transition-opacity flex-shrink-0">
+                                                    🗑
+                                                </button>
+                                            )}
+                                        </div>
+                                    );
+                                })}
                             </div>
                             {editMode && (
-                                <button onClick={(e) => confirmDelete(e, labMasterIds, `${entry.course_code} LAB`)}
-                                    title="Delete"
-                                    className="absolute top-0.5 right-0.5 w-5 h-5 rounded bg-red-100 hover:bg-red-500 text-red-600 hover:text-white text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                                    🗑
-                                </button>
+                                <button onClick={ev => openPopover(ev, slot.timeslot_id, secObj, semObj)}
+                                    className="mt-1 w-5 h-5 rounded-full bg-green-200 hover:bg-green-500 text-green-700 hover:text-white font-bold text-xs flex items-center justify-center mx-auto transition-colors opacity-0 group-hover:opacity-100"
+                                    title="Add another subsection lab here">+</button>
                             )}
                         </td>
                     );
@@ -466,21 +495,32 @@ export default function ViewMasterTimetable() {
                     continue;
                 }
 
-                // filled normal cell
-                if (entry) {
+                // filled cell — supports multiple co-scheduled subsections stacked
+                if (slotEntries.length > 0) {
                     cells.push(
                         <td key={`cell-${i}`} className="p-2 text-gray-700 font-semibold text-center relative group"
                             style={{ border: `1px solid ${theme.border}` }}>
-                            <div className="whitespace-nowrap overflow-hidden text-[11px]">
-                                {entry.course_code}-{entry.subsection_name || secName}-{entry.faculty_short}-{entry.room_name}
-                                {entry.component_type === "TUTORIAL" ? " (Tut.)" : ""}
+                            <div className="flex flex-col gap-1 items-center justify-center">
+                                {slotEntries.map((e, idx) => (
+                                    <div key={idx} className={`relative group/entry flex items-center gap-1 text-[11px] ${idx > 0 ? 'border-t border-gray-200 pt-1 w-full justify-center' : ''}`}>
+                                        <span className="whitespace-nowrap overflow-hidden">
+                                            {e.course_code}-{e.subsection_name || secName}-{e.faculty_short}-{e.room_name}
+                                            {e.component_type === "TUTORIAL" ? " (Tut.)" : ""}
+                                        </span>
+                                        {editMode && (
+                                            <button onClick={(ev) => confirmDelete(ev, e.master_id, e.course_code)}
+                                                title="Delete"
+                                                className="w-4 h-4 rounded bg-red-100 hover:bg-red-500 text-red-600 hover:text-white text-[9px] flex items-center justify-center opacity-0 group-hover/entry:opacity-100 transition-opacity flex-shrink-0">
+                                                🗑
+                                            </button>
+                                        )}
+                                    </div>
+                                ))}
                             </div>
-                            {editMode && (
-                                <button onClick={(e) => confirmDelete(e, entry.master_id, entry.course_code)}
-                                    title="Delete"
-                                    className="absolute top-0.5 right-0.5 w-5 h-5 rounded bg-red-100 hover:bg-red-500 text-red-600 hover:text-white text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                                    🗑
-                                </button>
+                            {editMode && slotEntries[0]?.subsection_id != null && (
+                                <button onClick={ev => openPopover(ev, slot.timeslot_id, secObj, semObj)}
+                                    className="mt-1 w-5 h-5 rounded-full bg-indigo-100 hover:bg-indigo-500 text-indigo-600 hover:text-white font-bold text-xs flex items-center justify-center mx-auto transition-colors opacity-0 group-hover:opacity-100"
+                                    title="Add another subsection here">+</button>
                             )}
                         </td>
                     );

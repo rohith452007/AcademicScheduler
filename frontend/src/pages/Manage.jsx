@@ -1,13 +1,45 @@
 import React, { useState, useEffect } from 'react';
 import adminService from '../services/adminService';
-import { useNavigate } from 'react-router-dom';
+import examService from '../services/examService';
+import { useNavigate, useLocation } from 'react-router-dom';
 
 function Manage() {
-    const [view, setView] = useState('dashboard');
-    const [activeCategory, setActiveCategory] = useState('ACADEMIC'); // ACADEMIC | CLASSES | RESOURCES | COURSES | LAB_ROOMS
+    const location = useLocation();
+    const [view, setView] = useState(location.state?.activeCategory ? 'admin' : 'dashboard');
+    const [activeCategory, setActiveCategory] = useState(location.state?.activeCategory || 'ACADEMIC'); // ACADEMIC | CLASSES | RESOURCES | COURSES | LAB_ROOMS | EXAMINATIONS
+
+    useEffect(() => {
+        if (location.state?.activeCategory) {
+            setActiveCategory(location.state.activeCategory);
+            setView('admin');
+        } else {
+            setView('dashboard');
+        }
+    }, [location.state]);
     const [labRoomPrefs, setLabRoomPrefs] = useState({});
     const [labCourses, setLabCourses] = useState([]);     // lab courses with lab_hours > 0
     const [labRoomMsg, setLabRoomMsg] = useState('');
+
+    // Examination tab states
+    const [examSubTab, setExamSubTab] = useState('TIMESLOTS'); // TIMESLOTS | BACKLOG | PREFERENCES
+    const [examTimeslots, setExamTimeslots] = useState([]);
+    const [backlogCourses, setBacklogCourses] = useState([]);
+    const [examSlotPrefs, setExamSlotPrefs] = useState([]);
+    const [examMsg, setExamMsg] = useState('');
+
+    // Exam Timeslot form
+    const [examSlotDate, setExamSlotDate] = useState('');
+    const [examSlotStartTime, setExamSlotStartTime] = useState('09:30');
+    const [examSlotEndTime, setExamSlotEndTime] = useState('12:30');
+    const [examSlotType, setExamSlotType] = useState('END_SEM');
+    const [examSlotName, setExamSlotName] = useState('Morning');
+
+    // Exam Backlog form
+    const [backlogProgId, setBacklogProgId] = useState('');
+    const [backlogSemId, setBacklogSemId] = useState('');
+    const [backlogBranchId, setBacklogBranchId] = useState('');
+    const [backlogCourseId, setBacklogCourseId] = useState('');
+    const [backlogRegSemId, setBacklogRegSemId] = useState('');
 
     // Search and filter states for Lab Room Assignments
     const [labSearch, setLabSearch] = useState('');
@@ -103,7 +135,8 @@ function Manage() {
         'COURSES': { title: 'COURSES & CURRICULUM', resources: ['course', 'course-branch', 'faculty-course'] },
         'TIMESLOTS': { title: 'TIMESLOTS', resources: ['timeslot'] },
         'USERS': { title: 'USERS', resources: ['user'] },
-        'LAB_ROOMS': { title: 'LAB ROOM PREFS', resources: [] }
+        'LAB_ROOMS': { title: 'LAB ROOM PREFS', resources: [] },
+        'EXAMINATIONS': { title: 'EXAMINATIONS', resources: [] }
     };
 
     // defines which database fields to display in each resource table
@@ -219,6 +252,130 @@ function Manage() {
         fetchLabData();
     }, [activeCategory]);
 
+    // Fetch Examination tab data when EXAMINATIONS category is active
+    useEffect(() => {
+        if (activeCategory !== 'EXAMINATIONS') return;
+        const fetchExamData = async () => {
+            try {
+                const [tsRes, blRes, spRes, progRes, branchRes, semRes, courseRes] = await Promise.all([
+                    examService.getExamTimeslots(),
+                    examService.getBacklogCourses(),
+                    examService.getExamSlotPreferences(),
+                    adminService.getPrograms(),
+                    adminService.getBranches(),
+                    adminService.getSemesters(),
+                    adminService.getCourses()
+                ]);
+                setExamTimeslots(tsRes.data || []);
+                setBacklogCourses(blRes.data || []);
+                setExamSlotPrefs(spRes.data || []);
+                setData(prev => ({
+                    ...prev,
+                    program: progRes.data || [],
+                    branch: branchRes.data || [],
+                    semester: semRes.data || [],
+                    course: courseRes.data || []
+                }));
+            } catch (e) {
+                console.error('Failed to fetch exam data', e);
+            }
+        };
+        fetchExamData();
+    }, [activeCategory]);
+
+    // Exam Timeslot handlers
+    const handleAddExamTimeslot = async (e) => {
+        e.preventDefault();
+        try {
+            await examService.createExamTimeslot({
+                exam_date: examSlotDate,
+                start_time: examSlotStartTime,
+                end_time: examSlotEndTime,
+                exam_type: examSlotType,
+                slot_name: examSlotName
+            });
+            const res = await examService.getExamTimeslots();
+            setExamTimeslots(res.data || []);
+            setExamSlotDate('');
+            setExamMsg('Exam timeslot added successfully!');
+            setTimeout(() => setExamMsg(''), 3000);
+        } catch (err) {
+            setExamMsg('Error: ' + (err?.response?.data?.error || err.message));
+        }
+    };
+
+    const handleDeleteExamTimeslot = async (id) => {
+        if (!window.confirm('Delete this exam timeslot?')) return;
+        try {
+            await examService.deleteExamTimeslot(id);
+            setExamTimeslots(prev => prev.filter(ts => ts.exam_slot_id !== id));
+            setExamMsg('Deleted.');
+            setTimeout(() => setExamMsg(''), 2000);
+        } catch (err) {
+            setExamMsg('Error: ' + (err?.response?.data?.error || err.message));
+        }
+    };
+
+    // Backlog course handlers
+    const handleAddBacklogCourse = async (e) => {
+        e.preventDefault();
+        try {
+            await examService.createBacklogCourse({
+                student_program_id: backlogProgId,
+                student_semester_id: backlogSemId,
+                student_branch_id: backlogBranchId,
+                course_id: backlogCourseId,
+                backlog_semester_id: backlogRegSemId
+            });
+            const res = await examService.getBacklogCourses();
+            setBacklogCourses(res.data || []);
+            setBacklogProgId(''); setBacklogSemId(''); setBacklogBranchId(''); setBacklogCourseId(''); setBacklogRegSemId('');
+            setExamMsg('Backlog course registered!');
+            setTimeout(() => setExamMsg(''), 3000);
+        } catch (err) {
+            setExamMsg('Error: ' + (err?.response?.data?.error || err.message));
+        }
+    };
+
+    const handleDeleteBacklogCourse = async (id) => {
+        if (!window.confirm('Remove this backlog registration?')) return;
+        try {
+            await examService.deleteBacklogCourse(id);
+            setBacklogCourses(prev => prev.filter(b => b.id !== id));
+        } catch (err) {
+            setExamMsg('Error: ' + (err?.response?.data?.error || err.message));
+        }
+    };
+
+    // Slot Preference handler
+    const handleSaveSlotPref = async (programId, semesterId, window_) => {
+        try {
+            await examService.saveExamSlotPreference({
+                program_id: programId,
+                semester_id: semesterId,
+                preferred_time_window: window_
+            });
+            const res = await examService.getExamSlotPreferences();
+            setExamSlotPrefs(res.data || []);
+            setExamMsg('Preference saved!');
+            setTimeout(() => setExamMsg(''), 2000);
+        } catch (err) {
+            setExamMsg('Error: ' + (err?.response?.data?.error || err.message));
+        }
+    };
+
+    // Generate Exam Timetable handler
+    const handleGenerateExamTimetable = async () => {
+        if (!window.confirm('Generate Exam Timetable? This will overwrite the current draft.')) return;
+        setExamMsg('Generating...');
+        try {
+            const res = await examService.generateExamTimetable();
+            setExamMsg(`✅ ${res.data.message}`);
+        } catch (err) {
+            setExamMsg('Error: ' + (err?.response?.data?.error || err.message));
+        }
+    };
+
     useEffect(() => {
         const token = localStorage.getItem('token');
         const role = localStorage.getItem('userRole');
@@ -231,7 +388,8 @@ function Manage() {
             else navigate('/master-timetable');
             return;
         }
-        if (view === 'resources') {
+        // Fetch tab data when in management view (not on dashboard)
+        if (view !== 'dashboard') {
             fetchCategoryData();
         }
     }, [activeCategory, view]);
@@ -239,47 +397,55 @@ function Manage() {
 
     const fetchCategoryData = async () => {
         try {
-            let resourcesToFetch = [...categories[activeCategory].resources];
+            // Determine which resources to fetch based on active tab
+            const tabResourceMap = {
+                'ACADEMIC': ['program', 'year', 'semester', 'branch'],
+                'CLASSES': ['section', 'subsection', 'program', 'branch', 'semester', 'year'],
+                'RESOURCES': ['faculty', 'room'],
+                'COURSES': ['course', 'course-branch', 'faculty-course', 'program', 'branch', 'faculty', 'semester', 'section'],
+                'TIMESLOTS': ['timeslot'],
+                'USERS': ['user'],
+                'LAB_ROOMS': ['room', 'program', 'branch', 'course'],
+                'EXAMINATIONS': [], // handled by separate useEffect
+            };
 
-            if (activeCategory === 'CLASSES') {
-                resourcesToFetch.push('program', 'branch', 'semester', 'year');
-            }
-            if (activeCategory === 'COURSES') {
-                resourcesToFetch.push('program', 'branch', 'faculty', 'semester', 'section');
-            }
+            const resourcesToFetch = [...new Set(tabResourceMap[activeCategory] || [])];
+            if (resourcesToFetch.length === 0) return;
 
-            resourcesToFetch = [...new Set(resourcesToFetch)];
-
-            const newData = { ...data };
+            const updates = {};
 
             await Promise.all(resourcesToFetch.map(async (r) => {
-                let res;
-                switch (r) {
-                    case 'program': res = await adminService.getPrograms(); break;
-                    case 'year': res = await adminService.getYears(); break;
-                    case 'semester': res = await adminService.getSemesters(); break;
-                    case 'branch': res = await adminService.getBranches(); break;
-                    case 'section': res = await adminService.getSections(); break;
-                    case 'subsection': res = await adminService.getSubsections(); break;
-                    case 'faculty': res = await adminService.getFaculty(); break;
-                    case 'room': res = await adminService.getRooms(); break;
-                    case 'course': res = await adminService.getCourses(); break;
-                    case 'course-branch': res = await adminService.getBranchCourses(); break;
-                    case 'faculty-course': res = await adminService.getFacultyCourses(); break;
-                    case 'timeslot': res = await adminService.getTimeSlots(); break;
-                    case 'user': res = await adminService.getUsers(); break;
-                    default: res = { data: [] };
+                try {
+                    let res;
+                    switch (r) {
+                        case 'program': res = await adminService.getPrograms(); break;
+                        case 'year': res = await adminService.getYears(); break;
+                        case 'semester': res = await adminService.getSemesters(); break;
+                        case 'branch': res = await adminService.getBranches(); break;
+                        case 'section': res = await adminService.getSections(); break;
+                        case 'subsection': res = await adminService.getSubsections(); break;
+                        case 'faculty': res = await adminService.getFaculty(); break;
+                        case 'room': res = await adminService.getRooms(); break;
+                        case 'course': res = await adminService.getCourses(); break;
+                        case 'course-branch': res = await adminService.getBranchCourses(); break;
+                        case 'faculty-course': res = await adminService.getFacultyCourses(); break;
+                        case 'timeslot': res = await adminService.getTimeSlots(); break;
+                        case 'user': res = await adminService.getUsers(); break;
+                        default: res = { data: [] };
+                    }
+                    updates[r] = Array.isArray(res.data) ? res.data : [];
+                } catch (err) {
+                    console.error(`Failed to fetch resource [${r}]:`, err);
+                    if (err && err.response && err.response.status === 401) {
+                        localStorage.removeItem('token');
+                        navigate('/login');
+                    }
                 }
-                newData[r] = Array.isArray(res.data) ? res.data : [];
             }));
 
-            setData(newData);
+            setData(prev => ({ ...prev, ...updates }));
         } catch (err) {
-            console.error(err);
-            if (err && err.response && err.response.status === 401) {
-                localStorage.removeItem('token');
-                navigate('/login');
-            }
+            console.error('fetchCategoryData error:', err);
         }
     };
 
@@ -2125,6 +2291,257 @@ function Manage() {
                     );
                 })}
                 {activeCategory === 'LAB_ROOMS' && null /* closed above */}
+
+                {/* EXAMINATIONS TAB */}
+                {activeCategory === 'EXAMINATIONS' && (
+                    <div style={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '32px', padding: '35px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05)' }}>
+
+                        {/* Header with action buttons */}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px', flexWrap: 'wrap', gap: '12px' }}>
+                            <div>
+                                <h3 style={{ fontSize: '1.4rem', fontWeight: '900', color: '#0f172a', margin: 0 }}>Examination Timetable Management</h3>
+                                <p style={{ color: '#64748b', fontSize: '0.85rem', marginTop: '6px', margin: '6px 0 0' }}>Configure exam slots, backlog registrations, and generate the exam schedule.</p>
+                            </div>
+                            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                                <button
+                                    onClick={handleGenerateExamTimetable}
+                                    style={{ backgroundColor: '#16a34a', color: 'white', padding: '12px 22px', borderRadius: '12px', fontWeight: '800', border: 'none', cursor: 'pointer', fontSize: '0.9rem', boxShadow: '0 2px 8px rgba(22,163,74,0.25)' }}
+                                >
+                                    Generate Examinations Timetable
+                                </button>
+                                <button
+                                    onClick={() => navigate('/exam-timetable')}
+                                    style={{ backgroundColor: '#2563eb', color: 'white', padding: '12px 22px', borderRadius: '12px', fontWeight: '800', border: 'none', cursor: 'pointer', fontSize: '0.9rem', boxShadow: '0 2px 8px rgba(37,99,235,0.25)' }}
+                                >
+                                    View Examination Timetable
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Status Message */}
+                        {examMsg && (
+                            <div style={{ marginBottom: '20px', padding: '12px 18px', borderRadius: '10px', background: examMsg.startsWith('Error') ? '#fef2f2' : '#f0fdf4', color: examMsg.startsWith('Error') ? '#991b1b' : '#15803d', border: `1px solid ${examMsg.startsWith('Error') ? '#fca5a5' : '#86efac'}`, fontWeight: '700', fontSize: '0.88rem' }}>
+                                {examMsg}
+                            </div>
+                        )}
+
+                        {/* Sub-tabs navigation */}
+                        <div style={{ display: 'flex', gap: '6px', marginBottom: '28px', background: '#f8fafc', padding: '6px', borderRadius: '14px', border: '1px solid #e2e8f0' }}>
+                            {['TIMESLOTS', 'BACKLOG', 'PREFERENCES'].map(tab => (
+                                <button
+                                    key={tab}
+                                    onClick={() => setExamSubTab(tab)}
+                                    style={{
+                                        flex: 1, padding: '12px', border: 'none', borderRadius: '10px', fontWeight: '800', cursor: 'pointer', fontSize: '0.82rem', letterSpacing: '0.5px',
+                                        backgroundColor: examSubTab === tab ? '#2563eb' : 'transparent',
+                                        color: examSubTab === tab ? 'white' : '#64748b',
+                                        transition: '0.2s'
+                                    }}
+                                >
+                                    {tab === 'TIMESLOTS' ? 'EXAM TIMESLOTS' : tab === 'BACKLOG' ? 'BACKLOG COURSES' : 'SLOT PREFERENCES'}
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* EXAM TIMESLOTS */}
+                        {examSubTab === 'TIMESLOTS' && (
+                            <div>
+                                <form onSubmit={handleAddExamTimeslot} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', marginBottom: '28px', background: '#f8fafc', padding: '20px', borderRadius: '16px', border: '1px solid #e2e8f0', alignItems: 'end' }}>
+                                    <div>
+                                        <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#475569', display: 'block', marginBottom: '4px' }}>Exam Date *</label>
+                                        <input type="date" value={examSlotDate} onChange={e => setExamSlotDate(e.target.value)} required style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '0.85rem', background: '#fff', boxSizing: 'border-box' }} />
+                                    </div>
+                                    <div>
+                                        <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#475569', display: 'block', marginBottom: '4px' }}>Start Time *</label>
+                                        <input type="time" value={examSlotStartTime} onChange={e => setExamSlotStartTime(e.target.value)} required style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '0.85rem', background: '#fff', boxSizing: 'border-box' }} />
+                                    </div>
+                                    <div>
+                                        <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#475569', display: 'block', marginBottom: '4px' }}>End Time *</label>
+                                        <input type="time" value={examSlotEndTime} onChange={e => setExamSlotEndTime(e.target.value)} required style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '0.85rem', background: '#fff', boxSizing: 'border-box' }} />
+                                    </div>
+                                    <div>
+                                        <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#475569', display: 'block', marginBottom: '4px' }}>Slot Name</label>
+                                        <select value={examSlotName} onChange={e => setExamSlotName(e.target.value)} style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '0.85rem', background: '#fff', boxSizing: 'border-box' }}>
+                                            <option value="Morning">Morning</option>
+                                            <option value="Afternoon">Afternoon</option>
+                                            <option value="Evening">Evening</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#475569', display: 'block', marginBottom: '4px' }}>Exam Type *</label>
+                                        <select value={examSlotType} onChange={e => setExamSlotType(e.target.value)} style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '0.85rem', background: '#fff', boxSizing: 'border-box' }}>
+                                            <option value="END_SEM">End Semester</option>
+                                            <option value="MID_SEM">Mid Semester</option>
+                                        </select>
+                                    </div>
+                                    <button type="submit" style={{ padding: '10px 18px', backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: '10px', fontWeight: '800', cursor: 'pointer', fontSize: '0.85rem' }}>
+                                        + Add Slot
+                                    </button>
+                                </form>
+
+                                {/* Timeslots Table */}
+                                {examTimeslots.length === 0 ? (
+                                    <div style={{ textAlign: 'center', padding: '40px', color: '#94a3b8', fontWeight: '500' }}>No exam timeslots configured yet.</div>
+                                ) : (
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                                        <thead>
+                                            <tr style={{ background: '#f1f5f9' }}>
+                                                {['Date', 'Start Time', 'End Time', 'Slot Name', 'Exam Type', 'Actions'].map(h => (
+                                                    <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontWeight: '800', color: '#475569', fontSize: '0.78rem', textTransform: 'uppercase', letterSpacing: '0.5px', borderBottom: '2px solid #e2e8f0' }}>{h}</th>
+                                                ))}
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {examTimeslots.map(ts => (
+                                                <tr key={ts.exam_slot_id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                                                    <td style={{ padding: '12px 16px', fontWeight: '600' }}>{new Date(ts.exam_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                                                    <td style={{ padding: '12px 16px' }}>{ts.start_time}</td>
+                                                    <td style={{ padding: '12px 16px' }}>{ts.end_time}</td>
+                                                    <td style={{ padding: '12px 16px' }}>
+                                                        <span style={{ background: ts.slot_name === 'Morning' ? '#fef9c3' : '#dbeafe', color: ts.slot_name === 'Morning' ? '#854d0e' : '#1e40af', padding: '3px 10px', borderRadius: '20px', fontWeight: '700', fontSize: '0.78rem' }}>{ts.slot_name}</span>
+                                                    </td>
+                                                    <td style={{ padding: '12px 16px' }}>
+                                                        <span style={{ background: ts.exam_type === 'END_SEM' ? '#fee2e2' : '#dcfce7', color: ts.exam_type === 'END_SEM' ? '#991b1b' : '#166534', padding: '3px 10px', borderRadius: '20px', fontWeight: '700', fontSize: '0.78rem' }}>{ts.exam_type}</span>
+                                                    </td>
+                                                    <td style={{ padding: '12px 16px' }}>
+                                                        <button onClick={() => handleDeleteExamTimeslot(ts.exam_slot_id)} style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fca5a5', padding: '5px 12px', borderRadius: '8px', fontWeight: '700', cursor: 'pointer', fontSize: '0.78rem' }}>Remove</button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                )}
+                            </div>
+                        )}
+
+                        {/* BACKLOG COURSES */}
+                        {examSubTab === 'BACKLOG' && (
+                            <div>
+                                <form onSubmit={handleAddBacklogCourse} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px', marginBottom: '28px', background: '#f8fafc', padding: '20px', borderRadius: '16px', border: '1px solid #e2e8f0', alignItems: 'end' }}>
+                                    <div>
+                                        <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#475569', display: 'block', marginBottom: '4px' }}>Student's Program</label>
+                                        <select value={backlogProgId} onChange={e => { setBacklogProgId(e.target.value); setBacklogSemId(''); setBacklogBranchId(''); }} required style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '0.85rem', background: '#fff', boxSizing: 'border-box' }}>
+                                            <option value="">Select Program</option>
+                                            {(data.program || []).map(p => <option key={p.program_id} value={p.program_id}>{p.program_name}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#475569', display: 'block', marginBottom: '4px' }}>Student's Current Semester</label>
+                                        <select value={backlogSemId} onChange={e => setBacklogSemId(e.target.value)} required style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '0.85rem', background: '#fff', boxSizing: 'border-box' }}>
+                                            <option value="">Select Semester</option>
+                                            {(data.semester || []).filter(s => !backlogProgId || String(s.program_id) === String(backlogProgId)).map(s => <option key={s.semester_id} value={s.semester_id}>Sem {s.semester_number}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#475569', display: 'block', marginBottom: '4px' }}>Student's Branch</label>
+                                        <select value={backlogBranchId} onChange={e => setBacklogBranchId(e.target.value)} required style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '0.85rem', background: '#fff', boxSizing: 'border-box' }}>
+                                            <option value="">Select Branch</option>
+                                            {(data.branch || []).filter(b => !backlogProgId || String(b.program_id) === String(backlogProgId)).map(b => <option key={b.branch_id} value={b.branch_id}>{b.branch_name}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#475569', display: 'block', marginBottom: '4px' }}>Backlog (Original) Semester *</label>
+                                        <select value={backlogRegSemId} onChange={e => { setBacklogRegSemId(e.target.value); setBacklogCourseId(''); }} required style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '0.85rem', background: '#fff', boxSizing: 'border-box' }}>
+                                            <option value="">Select Semester</option>
+                                            {(data.semester || []).filter(s => !backlogProgId || String(s.program_id) === String(backlogProgId)).map(s => <option key={s.semester_id} value={s.semester_id}>Sem {s.semester_number}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label style={{ fontSize: '0.78rem', fontWeight: '700', color: '#475569', display: 'block', marginBottom: '4px' }}>Backlog Course *</label>
+                                        <select value={backlogCourseId} onChange={e => setBacklogCourseId(e.target.value)} required style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #cbd5e1', fontSize: '0.85rem', background: '#fff', boxSizing: 'border-box' }}>
+                                            <option value="">Select Course</option>
+                                            {(data.course || [])
+                                                .filter(c => {
+                                                    if (backlogProgId && String(c.program_id) !== String(backlogProgId)) return false;
+                                                    if (backlogRegSemId && String(c.semester_id) !== String(backlogRegSemId)) return false;
+                                                    return true;
+                                                })
+                                                .map(c => <option key={c.course_id} value={c.course_id}>{c.course_code} — {c.course_name}</option>)}
+                                        </select>
+                                    </div>
+                                    <button type="submit" style={{ padding: '10px 18px', backgroundColor: '#7c3aed', color: 'white', border: 'none', borderRadius: '10px', fontWeight: '800', cursor: 'pointer', fontSize: '0.85rem' }}>
+                                        + Register Backlog
+                                    </button>
+                                </form>
+
+                                {backlogCourses.length === 0 ? (
+                                    <div style={{ textAlign: 'center', padding: '40px', color: '#94a3b8', fontWeight: '500' }}>No backlog registrations found.</div>
+                                ) : (
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                                        <thead>
+                                            <tr style={{ background: '#f1f5f9' }}>
+                                                {['Program', 'Current Sem', 'Branch', 'Backlog Course', 'Backlog Sem', 'Actions'].map(h => (
+                                                    <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontWeight: '800', color: '#475569', fontSize: '0.78rem', textTransform: 'uppercase', letterSpacing: '0.5px', borderBottom: '2px solid #e2e8f0' }}>{h}</th>
+                                                ))}
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {backlogCourses.map(b => (
+                                                <tr key={b.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                                                    <td style={{ padding: '12px 16px', fontWeight: '600' }}>{b.student_program_name}</td>
+                                                    <td style={{ padding: '12px 16px' }}>Sem {b.student_semester_number}</td>
+                                                    <td style={{ padding: '12px 16px' }}>{b.student_branch_name}</td>
+                                                    <td style={{ padding: '12px 16px' }}><strong>{b.course_code}</strong> — {b.course_name}</td>
+                                                    <td style={{ padding: '12px 16px' }}>Sem {b.backlog_semester_number}</td>
+                                                    <td style={{ padding: '12px 16px' }}>
+                                                        <button onClick={() => handleDeleteBacklogCourse(b.id)} style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fca5a5', padding: '5px 12px', borderRadius: '8px', fontWeight: '700', cursor: 'pointer', fontSize: '0.78rem' }}>Remove</button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                )}
+                            </div>
+                        )}
+
+                        {/* SLOT PREFERENCES */}
+                        {examSubTab === 'PREFERENCES' && (
+                            <div>
+                                <p style={{ color: '#64748b', fontSize: '0.85rem', marginBottom: '20px' }}>
+                                    Set preferred exam time window (Morning / Afternoon / Any) for each Program & Semester combination.
+                                </p>
+                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                                    <thead>
+                                        <tr style={{ background: '#f1f5f9' }}>
+                                            {['Program', 'Semester', 'Preferred Window'].map(h => (
+                                                <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontWeight: '800', color: '#475569', fontSize: '0.78rem', textTransform: 'uppercase', letterSpacing: '0.5px', borderBottom: '2px solid #e2e8f0' }}>{h}</th>
+                                            ))}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {(data.program || []).flatMap(prog =>
+                                            (data.semester || [])
+                                                .filter(s => String(s.program_id) === String(prog.program_id))
+                                                .map(sem => {
+                                                    const pref = examSlotPrefs.find(p => String(p.program_id) === String(prog.program_id) && String(p.semester_id) === String(sem.semester_id));
+                                                    const current = pref ? pref.preferred_time_window : 'ANY';
+                                                    return (
+                                                        <tr key={`${prog.program_id}_${sem.semester_id}`} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                                                            <td style={{ padding: '12px 16px', fontWeight: '600' }}>{prog.program_name}</td>
+                                                            <td style={{ padding: '12px 16px' }}>Semester {sem.semester_number}</td>
+                                                            <td style={{ padding: '12px 16px' }}>
+                                                                <select
+                                                                    value={current}
+                                                                    onChange={e => handleSaveSlotPref(prog.program_id, sem.semester_id, e.target.value)}
+                                                                    style={{ padding: '8px 14px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '0.85rem', background: '#fff', cursor: 'pointer' }}
+                                                                >
+                                                                    <option value="ANY">Any</option>
+                                                                    <option value="MORNING">Morning</option>
+                                                                    <option value="AFTERNOON">Afternoon</option>
+                                                                </select>
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+
+                    </div>
+                )}
+
             </div>
             {renderModalForm()}
         </div>

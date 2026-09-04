@@ -204,15 +204,16 @@ export default function StudentTimetable() {
                 }
 
                 // Normal / Lab schedule entry
-                const entry = semEntries.find(e =>
+                const slotEntries = semEntries.filter(e =>
                     e.section_name === secName &&
                     e.timeslot_id === slot.timeslot_id
                 );
+                const entry = slotEntries[0];
 
-                if (entry) {
+                if (slotEntries.length > 0) {
                     const isLab = entry.component_type === "LAB";
-                    let span = 1;
                     if (isLab) {
+                        let span = 1;
                         while (true) {
                             const nxt = daySlots[i + span];
                             if (!nxt || isBreak(nxt)) break;
@@ -226,19 +227,45 @@ export default function StudentTimetable() {
                             if (!nxtE) break;
                             span++;
                         }
+
+                        const labSlotEntries = slotEntries.filter(e => e.component_type === "LAB");
+
+                        cells.push(
+                            <td key={`cell-${i}`} colSpan={span}
+                                className="p-2 bg-green-50 text-green-700 font-semibold text-[11px] text-center relative group"
+                                style={{ border: `1px solid ${theme.border}` }}>
+                                <div className="flex flex-col gap-1 items-center justify-center">
+                                    {labSlotEntries.map((labE, idx) => (
+                                        <div key={idx} className={`flex items-center gap-1 ${idx > 0 ? 'border-t border-green-200 pt-1 w-full justify-center' : ''}`}>
+                                            <span className="whitespace-nowrap overflow-hidden">
+                                                {labE.course_code}-{labE.subsection_name || secName}-{labE.faculty_short}-{labE.room_name}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </td>
+                        );
+                        i += span - 1;
+                        continue;
                     }
 
+                    // Normal / Tutorial filled cell
                     cells.push(
-                        <td key={`cell-${i}`} colSpan={span}
-                            className={`p-2 text-center relative group ${isLab ? 'bg-green-50 text-green-700 font-semibold' : 'text-gray-700 font-semibold'}`}
+                        <td key={`cell-${i}`} className="p-2 text-gray-700 font-semibold text-center relative group"
                             style={{ border: `1px solid ${theme.border}` }}>
-                            <div className="whitespace-nowrap overflow-hidden text-[11px]">
-                                {entry.course_code}-{entry.subsection_name || secName}-{entry.faculty_short}-{entry.room_name}
-                                {entry.component_type === "TUTORIAL" ? " (Tut.)" : ""}
+                            <div className="flex flex-col gap-1 items-center justify-center">
+                                {slotEntries.map((e, idx) => (
+                                    <div key={idx} className={`flex items-center gap-1 text-[11px] ${idx > 0 ? 'border-t border-gray-200 pt-1 w-full justify-center' : ''}`}>
+                                        <span className="whitespace-nowrap overflow-hidden">
+                                            {e.course_code}-{e.subsection_name || secName}-{e.faculty_short}-{e.room_name}
+                                            {e.component_type === "TUTORIAL" ? " (Tut.)" : ""}
+                                        </span>
+                                    </div>
+                                ))}
                             </div>
                         </td>
                     );
-                    i += span - 1;
+                    continue;
                 } else {
                     cells.push(
                         <td key={`empty-${i}`} className="text-center" style={{ border: `1px solid ${theme.border}`, height: 40 }}>

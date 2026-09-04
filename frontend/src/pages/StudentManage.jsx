@@ -95,6 +95,29 @@ function StudentManage() {
                             <span>View Full Grid →</span>
                         </div>
                     </div>
+
+                    {/* Exam Timetable Card */}
+                    <div
+                        onClick={() => navigate('/exam-timetable')}
+                        style={{
+                            background: "linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)",
+                            padding: "48px",
+                            borderRadius: "32px",
+                            cursor: "pointer",
+                            boxShadow: "0 25px 50px -12px rgba(124, 58, 237, 0.25)",
+                            transition: "transform 0.3s ease",
+                            position: "relative",
+                            overflow: "hidden"
+                        }}
+                    >
+                        <h2 style={{ fontSize: "24px", fontWeight: "900", color: "#ffffff", marginBottom: "16px", textTransform: "uppercase" }}>Exam Timetable</h2>
+                        <p style={{ color: "#ede9fe", fontSize: "16px", fontWeight: "500", opacity: 0.9, lineHeight: "1.6" }}>
+                            Access examination schedule. View full institutional timetable or filter for your program & semester.
+                        </p>
+                        <div style={{ marginTop: "40px", display: "flex", alignItems: "center", gap: "12px", color: "white", fontWeight: "900", fontSize: "14px", textTransform: "uppercase" }}>
+                            <span>View Exam Schedule →</span>
+                        </div>
+                    </div>
                 </div>
 
                 {/* Read-Only Banner */}
